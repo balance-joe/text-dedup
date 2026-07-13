@@ -13,6 +13,8 @@
     "license": "Apache-2.0",
     "require": {
         "php": ">=8.2",
+        "ext-intl": "*",
+        "ext-sodium": "*",
         "hyperf/cache": "~3.2.0",
         "hyperf/command": "~3.2.0",
         "hyperf/config": "~3.2.0",
@@ -26,6 +28,7 @@
         "hyperf/process": "~3.2.0",
         "hyperf/laminas-mime": "^3.0",
         "hyperf/database": "~3.2.0",
+        "hyperf/database-pgsql": "~3.2.0",
         "hyperf/redis": "~3.2.0",
         "hyperf/constants": "~3.2.0",
         "hyperf/async-queue": "~3.2.0",
