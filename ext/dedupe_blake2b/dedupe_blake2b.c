@@ -100,6 +100,67 @@ PHP_FUNCTION(dedupe_minhash_signature)
     }
 }
 
+PHP_FUNCTION(dedupe_simhash)
+{
+    zval *grams;
+    zval *gram;
+    zend_long gram_count;
+    int weights[128] = {0};
+    unsigned char digest[16], output[16] = {0};
+    int bit, byte_index;
+
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_ARRAY(grams)
+    ZEND_PARSE_PARAMETERS_END();
+
+    gram_count = zend_hash_num_elements(Z_ARRVAL_P(grams));
+    if (gram_count == 0) RETURN_STRINGL((const char *) output, 16);
+
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(grams), gram) {
+        ZVAL_DEREF(gram);
+        if (Z_TYPE_P(gram) != IS_STRING) {
+            zend_type_error("dedupe_simhash(): every gram must be a string");
+            RETURN_THROWS();
+        }
+        dedupe_blake2b(digest, 16, Z_STRVAL_P(gram), Z_STRLEN_P(gram));
+        for (bit = 0; bit < 128; ++bit) {
+            byte_index = 15 - bit / 8;
+            weights[bit] += (digest[byte_index] & (1U << (bit % 8))) ? 1 : -1;
+        }
+    } ZEND_HASH_FOREACH_END();
+
+    for (bit = 0; bit < 128; ++bit) {
+        if (weights[bit] >= 0) output[15 - bit / 8] |= (unsigned char) (1U << (bit % 8));
+    }
+    RETURN_STRINGL((const char *) output, 16);
+}
+
+PHP_FUNCTION(dedupe_uint64_decimals)
+{
+    zval *values;
+    zval *item;
+    uint64_t value;
+    char decimal[21];
+    int length;
+
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_ARRAY(values)
+    ZEND_PARSE_PARAMETERS_END();
+
+    array_init_size(return_value, zend_hash_num_elements(Z_ARRVAL_P(values)));
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(values), item) {
+        ZVAL_DEREF(item);
+        if (Z_TYPE_P(item) != IS_STRING || Z_STRLEN_P(item) != 8) {
+            zend_type_error("dedupe_uint64_decimals(): every value must be an eight-byte string");
+            RETURN_THROWS();
+        }
+
+        value = load_be64((const unsigned char *) Z_STRVAL_P(item));
+        length = snprintf(decimal, sizeof(decimal), "%llu", (unsigned long long) value);
+        add_next_index_stringl(return_value, decimal, length);
+    } ZEND_HASH_FOREACH_END();
+}
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_blake2b, 0, 1, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, input, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, length, IS_LONG, 0)
@@ -109,9 +170,19 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_minhash_signature, 0, 1, 
     ZEND_ARG_TYPE_INFO(0, grams, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_simhash, 0, 1, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, grams, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_uint64_decimals, 0, 1, IS_ARRAY, 0)
+    ZEND_ARG_TYPE_INFO(0, values, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry dedupe_blake2b_functions[] = {
     PHP_FE(dedupe_blake2b, arginfo_dedupe_blake2b)
     PHP_FE(dedupe_minhash_signature, arginfo_dedupe_minhash_signature)
+    PHP_FE(dedupe_simhash, arginfo_dedupe_simhash)
+    PHP_FE(dedupe_uint64_decimals, arginfo_dedupe_uint64_decimals)
     PHP_FE_END
 };
 

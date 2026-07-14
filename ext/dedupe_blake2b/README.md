@@ -2,7 +2,7 @@
 
 ## 这是什么，为什么存在
 
-本扩展为文章去重服务提供一个 PHP 原生函数：
+本扩展为文章去重服务提供一组 PHP 原生函数。基础函数是：
 
 ```php
 dedupe_blake2b(string $input, int $length = 8): string
@@ -15,6 +15,22 @@ dedupe_minhash_signature(array $grams): array
 ```
 
 它接收 PHP 已生成的 5-gram 字符串数组，返回 128 个八字节大端序 uint64。项目会自动优先使用该函数，避免在 PHP 中执行约两千万次无符号 64 位乘加。
+
+SimHash 同样提供批量原生函数：
+
+```php
+dedupe_simhash(array $grams): string
+```
+
+它返回 16 字节大端序 SimHash，避免逐 gram 跨越 PHP/扩展边界并在 PHP 中累计 128 位权重。
+
+扩展还提供批量 uint64 十进制转换：
+
+```php
+dedupe_uint64_decimals(array $values): array
+```
+
+输入是若干个八字节大端序二进制字符串，输出是对应的无符号十进制字符串。MinHash 的完整签名和分桶结果必须使用字符串表示，否则超过 PHP 有符号整数上限的值会溢出。批量转换可避免在 PHP 中反复进行高低位除法。
 
 它返回**二进制** BLAKE2b 摘要，摘要长度可为 1 到 64 字节。
 
@@ -33,8 +49,8 @@ hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest()
 - 只依赖 PHP 扩展编译工具和 C 编译器。
 - 内置 BLAKE2b C 实现，**不依赖 OpenSSL、FFI、Swoole、Python 或数据库**。
 - 可在普通 PHP CLI、PHP-FPM、Hyperf/Swoole 中加载。
-- 只负责 BLAKE2b 与 MinHash 的 128 维签名运算；不负责 SimHash、数据库或协程调度。
-- MinHash 函数只负责 128 维签名运算；文本归一化与 5-gram 生成仍由 PHP 完成。
+- 负责 BLAKE2b、MinHash 128 维签名、SimHash 128 位累计，以及 uint64 批量十进制转换；不负责数据库或协程调度。
+- 文本归一化与 5-gram 生成仍由 PHP 完成，扩展只接收 PHP 生成好的字符串或 gram 数组。
 
 ## 服务器编译与安装
 
@@ -62,6 +78,8 @@ phpize
 make -j"$(nproc)"
 sudo make install
 ```
+
+构建配置会使用 `-O3 -march=native`，针对当前服务器 CPU 优化。扩展 `.so` 如果迁移到不同型号的服务器，必须在目标服务器重新编译，不要直接复制旧 `.so`。
 
 `make install` 成功后会显示 `dedupe_blake2b.so` 的安装目录。
 
@@ -124,6 +142,20 @@ d8bb14d833d59559
 ```bash
 php -r 'var_dump(function_exists("dedupe_minhash_signature"));'
 ```
+
+同时确认：
+
+```bash
+php -r 'var_dump(function_exists("dedupe_simhash"));'
+```
+
+再确认批量 uint64 十进制转换及边界值：
+
+```bash
+php -r 'var_dump(dedupe_uint64_decimals([hex2bin("0000000000000000"), hex2bin("ffffffffffffffff")]));'
+```
+
+应输出 `0` 和 `18446744073709551615` 两个字符串。
 
 最后运行项目兼容性验证：
 
