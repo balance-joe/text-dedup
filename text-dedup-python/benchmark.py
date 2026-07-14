@@ -10,7 +10,7 @@ TOKEN_RE = re.compile(r"\[[^\[\]]{1,20}\]")
 SPACE_RE = re.compile(r"\s+")
 
 def args():
-    p=argparse.ArgumentParser(); p.add_argument("--input",type=Path,default=ROOT/"runtime/php-compat-baseline-1000.json"); p.add_argument("--repeat",type=int,default=1); return p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument("-input","--input",dest="input",type=Path,default=ROOT/"runtime/php-compat-baseline-1000.json"); p.add_argument("--repeat",type=int,default=1); return p.parse_args()
 def is_emoji(c):
     n=ord(c); return any(a<=n<=b for a,b in [(0x1F600,0x1F64F),(0x1F300,0x1F5FF),(0x1F680,0x1F6FF),(0x1F1E0,0x1F1FF),(0x1F900,0x1F9FF),(0x1FA00,0x1FAFF),(0x2600,0x27BF),(0x231A,0x231B),(0x23E9,0x23F3),(0x23F8,0x23FA),(0x25AA,0x25AB),(0x25B6,0x25C0),(0x25FB,0x25FE),(0x2934,0x2935),(0x2B05,0x2B07),(0x2B1B,0x2B1C),(0xFE00,0xFE0F)]) or n in (0x2B50,0x2B55,0x3030,0x303D,0x3297,0x3299,0x200D,0x20E3)
 def normalize(v):
