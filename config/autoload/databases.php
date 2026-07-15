@@ -14,32 +14,16 @@ use Hyperf\ModelCache\Handler\RedisHandler;
 use function Hyperf\Support\env;
 
 return [
-    'dedupe_pg' => [
-        'driver' => 'pgsql-swoole',
-        'host' => env('DEDUPE_PG_HOST', '127.0.0.1'),
-        'port' => (int) env('DEDUPE_PG_PORT', 5432),
-        'database' => env('DEDUPE_PG_DATABASE', 'dedupe'),
-        'username' => env('DEDUPE_PG_USERNAME', 'dedupe_readonly'),
-        'password' => env('DEDUPE_PG_PASSWORD', ''),
-        'charset' => 'utf8',
-        'prefix' => '',
-        'pool' => [
-            'min_connections' => (int) env('DEDUPE_PG_POOL_MIN_CONNECTIONS', 1),
-            'max_connections' => (int) env('DEDUPE_PG_POOL_MAX_CONNECTIONS', 10),
-            'connect_timeout' => (float) env('DEDUPE_PG_CONNECT_TIMEOUT', 5.0),
-            'wait_timeout' => (float) env('DEDUPE_PG_WAIT_TIMEOUT', 3.0),
-            'max_idle_time' => (float) env('DEDUPE_PG_MAX_IDLE_TIME', 60.0),
-        ],
-    ],
     'default' => [
-        'driver' => env('DB_DRIVER', 'mysql'),
+        'driver' => env('DB_DRIVER', 'pgsql'),
         'host' => env('DB_HOST', 'localhost'),
-        'port' => env('DB_PORT', 3306),
-        'database' => env('DB_DATABASE', 'hyperf'),
-        'username' => env('DB_USERNAME', 'root'),
+        'port' => env('DB_PORT', 5432),
+        'database' => env('DB_DATABASE', 'dedup_content'),
+        'username' => env('DB_USERNAME', 'postgres'),
         'password' => env('DB_PASSWORD', ''),
-        'charset' => env('DB_CHARSET', 'utf8mb4'),
-        'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+        'charset' => env('DB_CHARSET', 'utf8'),
+        'collation' => env('DB_COLLATION', ''),
+        'schema' => array_values(array_filter(array_map('trim', explode(',', env('DB_SCHEMA', 'dedup_content,public'))))),
         'prefix' => env('DB_PREFIX', ''),
         'pool' => [
             'min_connections' => 1,
