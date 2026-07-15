@@ -12,16 +12,19 @@ declare(strict_types=1);
 
 namespace App\Controller;
 
+use App\Service\DedupeService;
+use Hyperf\Di\Annotation\Inject;
+
 class IndexController extends AbstractController
 {
+    #[Inject]
+    protected DedupeService $dedupeService;
+
     public function index()
     {
-        $user = $this->request->input('user', 'Hyperf');
-        $method = $this->request->getMethod();
-
         return [
-            'method' => $method,
-            'message' => "Hello {$user}.",
+            'status' => 'ok',
+            'documents' => $this->dedupeService->documentCount(),
         ];
     }
 }

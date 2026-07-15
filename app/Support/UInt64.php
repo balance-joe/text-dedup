@@ -134,6 +134,29 @@ final class UInt64
         return $digits;
     }
 
+    /** 从十进制 uint64 字符串还原八字节大端序二进制值。 */
+    public static function fromDecimal(string $value): string
+    {
+        if (preg_match('/\\A(?:0|[1-9][0-9]*)\\z/', $value) !== 1) {
+            throw new InvalidArgumentException('uint64 十进制值必须是非负整数字符串。');
+        }
+
+        $words = [0, 0, 0, 0];
+        foreach (str_split($value) as $digit) {
+            $carry = (int) $digit;
+            for ($index = 3; $index >= 0; --$index) {
+                $current = $words[$index] * 10 + $carry;
+                $words[$index] = $current & 0xffff;
+                $carry = intdiv($current, 0x10000);
+            }
+            if ($carry !== 0) {
+                throw new InvalidArgumentException('uint64 十进制值超出 64 位无符号整数范围。');
+            }
+        }
+
+        return pack('N2', ($words[0] << 16) | $words[1], ($words[2] << 16) | $words[3]);
+    }
+
     private static function parts(string $value): array
     {
         if (strlen($value) !== 8) {
