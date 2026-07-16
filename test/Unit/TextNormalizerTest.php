@@ -12,7 +12,9 @@ final class TextNormalizerTest extends TestCase
     public function testNormalizesChineseDigitsEmojiAndBracketTokens(): void
     {
         $normalizer = new TextNormalizer();
-        self::assertSame('测试0新闻', $normalizer->normalize('测试 123 新闻😀[微笑]'));
+        // Python兼容规则先把连续数字归一为ASCII 0，随后只保留中日韩与全角区间，
+        // 因此ASCII 0最终也会被过滤。
+        self::assertSame('测试新闻', $normalizer->normalize('测试 123 新闻😀[微笑]'));
     }
 
     public function testFallsBackToWhitespaceStrippedOriginalWhenNoChineseRemains(): void

@@ -18,6 +18,10 @@ final class UInt64
         if ($value >= 0) {
             return pack('N2', intdiv($value, self::BASE), $value % self::BASE);
         }
+        // -PHP_INT_MIN 会先溢出为 float；直接返回最小有符号 bigint 的补码。
+        if ($value === PHP_INT_MIN) {
+            return pack('N2', 0x80000000, 0);
+        }
         $magnitude = -$value;
         $remainder = $magnitude % self::BASE;
         $low = $remainder === 0 ? 0 : self::BASE - $remainder;

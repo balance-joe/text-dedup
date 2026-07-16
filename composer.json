@@ -81,7 +81,7 @@
         "post-autoload-dump": [
             "rm -rf runtime/container"
         ],
-        "test": "co-phpunit --prepend test/bootstrap.php --colors=always",
+        "test": "co-phpunit --prepend test/bootstrap.php --colors=always test",
         "cs-fix": "php-cs-fixer fix $1",
         "analyse": "phpstan analyse --memory-limit 300M",
         "start": [

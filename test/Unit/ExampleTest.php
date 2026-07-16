@@ -9,6 +9,14 @@ declare(strict_types=1);
  * @contact  group@hyperf.io
  * @license  https://github.com/hyperf/hyperf/blob/master/LICENSE
  */
-test('example', function () {
-    expect(true)->toBeTrue();
-});
+namespace HyperfTest\Unit;
+
+use PHPUnit\Framework\TestCase;
+
+final class ExampleTest extends TestCase
+{
+    public function testExample(): void
+    {
+        self::assertTrue(true);
+    }
+}

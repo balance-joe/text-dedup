@@ -14,11 +14,11 @@ final class FingerprintContextTest extends TestCase
     {
         $context = FingerprintContext::fromSource(['title' => '标题 123', 'content' => '正文 456']);
 
-        self::assertSame('标题0', $context->normalizedTitle);
-        self::assertSame('正文0', $context->normalizedContent);
-        self::assertSame('正文0', $context->text);
-        self::assertSame(md5('正文0'), $context->contentHash);
-        self::assertSame(md5('标题0'), $context->titleHash);
+        self::assertSame('标题', $context->normalizedTitle);
+        self::assertSame('正文', $context->normalizedContent);
+        self::assertSame('正文', $context->text);
+        self::assertSame(md5('正文'), $context->contentHash);
+        self::assertSame(md5('标题'), $context->titleHash);
         self::assertSame($context->contentHash, $context->exactHash);
     }
 

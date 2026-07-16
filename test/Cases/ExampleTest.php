@@ -20,8 +20,8 @@ use Hyperf\Testing\TestCase;
  */
 class ExampleTest extends TestCase
 {
-    public function testExample()
+    public function testRootHealthSummary(): void
     {
-        $this->get('/')->assertOk()->assertSee('Hyperf');
+        $this->get('/')->assertOk()->assertJsonFragment(['status' => 'ok']);
     }
 }
