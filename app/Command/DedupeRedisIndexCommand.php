@@ -95,7 +95,9 @@ final class DedupeRedisIndexCommand extends Command
         }
         $expected = max(0, (int) $this->input->getOption('expected-items'));
         $sampleSeconds = max(0, min(60, (int) $this->input->getOption('sample-seconds')));
-        $first = $this->builder->minhashItemCount($generation);
+        $keyCount = 0;
+        $first = $this->builder->minhashItemCount($generation, 'content', $keyCount);
+        $this->line('content_minhash_keys=' . number_format($keyCount));
         $this->line('content_minhash_items=' . number_format($first));
         if ($expected > 0) {
             $this->line(sprintf('progress=%.2f%%', min(100, $first * 100 / $expected)));
@@ -103,7 +105,8 @@ final class DedupeRedisIndexCommand extends Command
         if (($metadata['status'] ?? '') === 'building' && $sampleSeconds > 0) {
             $startedAt = microtime(true);
             sleep($sampleSeconds);
-            $second = $this->builder->minhashItemCount($generation);
+            $secondKeyCount = 0;
+            $second = $this->builder->minhashItemCount($generation, 'content', $secondKeyCount);
             $elapsed = max(0.001, microtime(true) - $startedAt);
             $rate = max(0.0, ($second - $first) / $elapsed);
             $this->line('content_minhash_items_after_sample=' . number_format($second));

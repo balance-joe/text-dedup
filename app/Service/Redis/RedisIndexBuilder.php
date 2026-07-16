@@ -98,7 +98,7 @@ final class RedisIndexBuilder
     }
 
     /** 通过 RedisBloom 自身计数只读估算 generation 已写入的 MinHash 项数。 */
-    public function minhashItemCount(string $generation, string $scope = 'content'): int
+    public function minhashItemCount(string $generation, string $scope = 'content', ?int &$keyCount = null): int
     {
         $redis = $this->redis();
         $iterator = null;
@@ -110,20 +110,13 @@ final class RedisIndexBuilder
             }
         } while ($iterator !== 0);
         $keys = array_values(array_unique($keys));
+        $keyCount = count($keys);
 
         $total = 0;
-        foreach (array_chunk($keys, 500) as $chunk) {
-            $responses = $redis->pipeline(static function (\Redis $pipeline) use ($chunk): void {
-                foreach ($chunk as $key) {
-                    $pipeline->rawCommand('BF.INFO', $key);
-                }
-            });
-            if (!is_array($responses) || count($responses) !== count($chunk)) {
-                throw new \RuntimeException('Unable to read RedisBloom build progress.');
-            }
-            foreach ($responses as $info) {
-                $total += $this->bloomItemsInserted($info);
-            }
+        // BF.INFO 在不同 RedisBloom/RESP 组合下可能返回平铺数组、map 或嵌套键值对；
+        // 进度命令频率很低，逐 key 读取比 Pipeline 响应再嵌套一层更容易可靠兼容。
+        foreach ($keys as $key) {
+            $total += $this->bloomItemsInserted($redis->rawCommand('BF.INFO', $key));
         }
         return $total;
     }
@@ -247,15 +240,26 @@ final class RedisIndexBuilder
             return 0;
         }
         foreach ($info as $index => $value) {
-            if (is_string($index) && strcasecmp($index, 'Number of items inserted') === 0) {
+            if (is_string($index) && $this->normalizedInfoName($index) === 'numberofitemsinserted') {
                 return max(0, (int) $value);
             }
             if (is_int($index) && is_string($value)
-                && strcasecmp($value, 'Number of items inserted') === 0) {
+                && $this->normalizedInfoName($value) === 'numberofitemsinserted') {
                 return max(0, (int) ($info[$index + 1] ?? 0));
+            }
+            if (is_array($value)) {
+                $nested = $this->bloomItemsInserted($value);
+                if ($nested > 0) {
+                    return $nested;
+                }
             }
         }
         return 0;
+    }
+
+    private function normalizedInfoName(string $value): string
+    {
+        return strtolower((string) preg_replace('/[^a-z]/i', '', $value));
     }
 
     private function qualified(string $table): string
