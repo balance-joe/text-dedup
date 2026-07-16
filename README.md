@@ -75,3 +75,120 @@ php \
 ```
 
 `--workers` 取值应按服务器 CPU 和实际压测结果决定。上述程序会加载整份基准并创建子进程，只用于正确性和 CPU 计算性能验证，不应直接作为线上接口进程模型。
+
+
+
+
+
+
+## Redis 数据补全
+
+Redis 数据补全按这个顺序执行。
+
+1. 开启新 band 的日期写入
+
+修改 `.env`：
+
+```dotenv
+DEDUPE_BAND_CREATED_AT_WRITE_ENABLED=1
+DEDUPE_BAND_DATE_FILTER_ENABLED=0
+DEDUPE_REDIS_INDEX_ENABLED=0
+```
+
+重启正在运行的 Hyperf Worker，确保新入库 band 已经开始写 `created_at`。
+
+2. 回填 PostgreSQL 历史日期
+
+```bash
+php bin/hyperf.php dedupe:band-schema backfill \
+  --batch-size=10000 \
+  --force
+```
+然后执行：
+
+```bash
+php bin/hyperf.php dedupe:band-schema create-index --force
+
+php bin/hyperf.php dedupe:band-schema validate
+```
+
+只有 `validate` 确认 `missing_created_at=0` 后，再执行：
+
+```bash
+php bin/hyperf.php dedupe:band-schema enforce --force
+```
+
+输出中的：
+
+```text
+title_simhash_band rows=-8
+title_minhash_band rows=-32
+```
+
+不是负数数据，而是 PostgreSQL 部分叶分区尚未 ANALYZE 导致的估算值；`not-scanned` 也不是 Redis 错误。最终以 `validate` 的实际检查结果为准。
+
+3. 开启 Redis 索引与日期查询
+
+修改 `.env`：
+
+```dotenv
+DEDUPE_BAND_CREATED_AT_WRITE_ENABLED=1
+DEDUPE_BAND_DATE_FILTER_ENABLED=1
+DEDUPE_REDIS_INDEX_ENABLED=1
+```
+
+
+4. 真正向 Redis 回填数据
+
+```bash
+php bin/hyperf.php dedupe:redis-index build \
+  --generation=g2026071601 \
+  --from=2026-07-07 \
+  --to=2026-07-16 \
+  --batch-size=10000
+```
+
+这个命令开始后，Redis 才会出现：
+
+```text
+dedupe:g2026071601:...
+```
+
+包括：
+
+- generation metadata
+- Exact Hash Bloom
+- external_id Bloom
+- 按天、scope、band 分桶的 MinHash Bloom
+
+构建过程中会持续输出类似：
+
+```text
+reserved d20260707
+exact doc_pk=10000
+content minhash band=0 doc_pk=...
+```
+
+5. 检查 Redis
+
+构建期间或完成后：
+
+```bash
+php bin/hyperf.php dedupe:redis-index status \
+  --generation=g2026071601
+```
+
+也可以直接检查相同 Redis DB：
+
+```bash
+redis-cli -h <REDIS_HOST> -p <REDIS_PORT> -n <REDIS_DB> \
+  --scan --pattern 'dedupe:*' | head -50
+```
+
+构建完成显示 `ready` 后才能激活：
+
+```bash
+php bin/hyperf.php dedupe:redis-index activate \
+  --generation=g2026071601 \
+  --force
+```
