@@ -53,6 +53,14 @@ final class RedisKeyFactory
         return sprintf('%s:%s:minhash:%s:%s:b%d', $this->prefix(), $this->generation($generation), $scope, $this->bucket($bucket), $bandIndex);
     }
 
+    public function minhashPattern(string $generation, string $scope): string
+    {
+        if (!in_array($scope, ['content', 'title'], true)) {
+            throw new InvalidArgumentException("Unsupported fingerprint scope: {$scope}");
+        }
+        return sprintf('%s:%s:minhash:%s:*', $this->prefix(), $this->generation($generation), $scope);
+    }
+
     public function checkpoint(string $generation, string $name): string
     {
         if (preg_match('/\A[a-z0-9:_-]+\z/i', $name) !== 1) {

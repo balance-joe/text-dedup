@@ -97,6 +97,37 @@ final class RedisIndexBuilder
         return $deleted;
     }
 
+    /** 通过 RedisBloom 自身计数只读估算 generation 已写入的 MinHash 项数。 */
+    public function minhashItemCount(string $generation, string $scope = 'content'): int
+    {
+        $redis = $this->redis();
+        $iterator = null;
+        $keys = [];
+        do {
+            $page = $redis->scan($iterator, $this->keys->minhashPattern($generation, $scope), 500);
+            if (is_array($page)) {
+                array_push($keys, ...$page);
+            }
+        } while ($iterator !== 0);
+        $keys = array_values(array_unique($keys));
+
+        $total = 0;
+        foreach (array_chunk($keys, 500) as $chunk) {
+            $responses = $redis->pipeline(static function (\Redis $pipeline) use ($chunk): void {
+                foreach ($chunk as $key) {
+                    $pipeline->rawCommand('BF.INFO', $key);
+                }
+            });
+            if (!is_array($responses) || count($responses) !== count($chunk)) {
+                throw new \RuntimeException('Unable to read RedisBloom build progress.');
+            }
+            foreach ($responses as $info) {
+                $total += $this->bloomItemsInserted($info);
+            }
+        }
+        return $total;
+    }
+
     private function buildExact(Redis $redis, string $generation, int $batchSize, ?callable $progress): void
     {
         $connection = $this->connection();
@@ -208,6 +239,23 @@ final class RedisIndexBuilder
     private function redis(): Redis
     {
         return $this->redisFactory->get('default');
+    }
+
+    private function bloomItemsInserted(mixed $info): int
+    {
+        if (!is_array($info)) {
+            return 0;
+        }
+        foreach ($info as $index => $value) {
+            if (is_string($index) && strcasecmp($index, 'Number of items inserted') === 0) {
+                return max(0, (int) $value);
+            }
+            if (is_int($index) && is_string($value)
+                && strcasecmp($value, 'Number of items inserted') === 0) {
+                return max(0, (int) ($info[$index + 1] ?? 0));
+            }
+        }
+        return 0;
     }
 
     private function qualified(string $table): string

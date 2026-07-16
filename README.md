@@ -178,6 +178,15 @@ php bin/hyperf.php dedupe:redis-index status \
   --generation=g2026071601
 ```
 
+构建过程中可传入预计的正文 MinHash 总项数，命令会只读采样 RedisBloom 并估算剩余时间：
+
+```bash
+php bin/hyperf.php dedupe:redis-index status \
+  --generation=g2026071601 \
+  --expected-items=74245250 \
+  --sample-seconds=10
+```
+
 也可以直接检查相同 Redis DB：
 
 ```bash

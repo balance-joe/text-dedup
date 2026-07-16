@@ -31,6 +31,8 @@ final class DedupeRedisIndexCommand extends Command
             ->addOption('from', null, InputOption::VALUE_REQUIRED, '回填起始日期 YYYY-MM-DD')
             ->addOption('to', null, InputOption::VALUE_REQUIRED, '回填结束日期（包含）YYYY-MM-DD')
             ->addOption('batch-size', null, InputOption::VALUE_REQUIRED, '回填批大小', '10000')
+            ->addOption('expected-items', null, InputOption::VALUE_REQUIRED, 'status估算ETA使用的正文MinHash预计总项数', '0')
+            ->addOption('sample-seconds', null, InputOption::VALUE_REQUIRED, 'status测速采样秒数', '10')
             ->addOption('force', 'f', InputOption::VALUE_NONE, '确认 activate/cleanup 操作');
     }
 
@@ -91,6 +93,27 @@ final class DedupeRedisIndexCommand extends Command
         foreach ($metadata as $name => $value) {
             $this->line("{$name}={$value}");
         }
+        $expected = max(0, (int) $this->input->getOption('expected-items'));
+        $sampleSeconds = max(0, min(60, (int) $this->input->getOption('sample-seconds')));
+        $first = $this->builder->minhashItemCount($generation);
+        $this->line('content_minhash_items=' . number_format($first));
+        if ($expected > 0) {
+            $this->line(sprintf('progress=%.2f%%', min(100, $first * 100 / $expected)));
+        }
+        if (($metadata['status'] ?? '') === 'building' && $sampleSeconds > 0) {
+            $startedAt = microtime(true);
+            sleep($sampleSeconds);
+            $second = $this->builder->minhashItemCount($generation);
+            $elapsed = max(0.001, microtime(true) - $startedAt);
+            $rate = max(0.0, ($second - $first) / $elapsed);
+            $this->line('content_minhash_items_after_sample=' . number_format($second));
+            $this->line('items_per_second=' . number_format($rate, 0, '.', ''));
+            if ($expected > 0 && $rate > 0) {
+                $remaining = max(0, $expected - $second);
+                $etaSeconds = (int) ceil($remaining / $rate);
+                $this->line('eta=' . $this->duration($etaSeconds));
+            }
+        }
         return self::SUCCESS;
     }
 
@@ -112,5 +135,12 @@ final class DedupeRedisIndexCommand extends Command
     {
         $this->error("Unsupported action: {$action}");
         return self::INVALID;
+    }
+
+    private function duration(int $seconds): string
+    {
+        $hours = intdiv($seconds, 3600);
+        $minutes = intdiv($seconds % 3600, 60);
+        return sprintf('%02d:%02d:%02d', $hours, $minutes, $seconds % 60);
     }
 }
