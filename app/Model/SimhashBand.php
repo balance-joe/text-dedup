@@ -19,5 +19,6 @@ final class SimhashBand extends Model
         'band_index' => 'integer',
         'band_value' => 'integer',
         'doc_pk' => 'integer',
+        'created_at' => 'datetime',
     ];
 }

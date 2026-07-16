@@ -41,6 +41,9 @@ final class DedupeController extends AbstractController
             if (isset($payload['levels']) && is_array($payload['levels'])) {
                 $options['levels'] = array_values(array_filter($payload['levels'], 'is_string'));
             }
+            if (array_key_exists('insert_on_check', $payload)) {
+                $options['insert_on_check'] = filter_var($payload['insert_on_check'], FILTER_VALIDATE_BOOLEAN);
+            }
             return $this->ok($this->dedupeService->check($source, $options));
         } catch (InvalidArgumentException $exception) {
             return $this->fail($exception->getMessage());
@@ -56,4 +59,5 @@ final class DedupeController extends AbstractController
     {
         return ['status' => 0, 'msg' => $msg, 'data' => $data];
     }
+
 }

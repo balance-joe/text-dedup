@@ -11,7 +11,6 @@ declare(strict_types=1);
  */
 
 namespace App\Controller;
-
 use App\Service\DedupeService;
 use Hyperf\Di\Annotation\Inject;
 
