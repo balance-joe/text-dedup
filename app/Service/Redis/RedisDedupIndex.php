@@ -23,7 +23,17 @@ final class RedisDedupIndex
     ) {
     }
 
-    public function prewrite(string $externalId, FingerprintContext $content, ?FingerprintContext $title, DateTimeImmutable $createdAt): RedisPrewriteResult
+    public function prewrite(string $externalId, FingerprintContext $content, ?FingerprintContext $title, DateTimeImmutable $createdAt, ?float &$milliseconds = null): RedisPrewriteResult
+    {
+        $startedAt = microtime(true);
+        try {
+            return $this->performPrewrite($externalId, $content, $title, $createdAt);
+        } finally {
+            $milliseconds = (microtime(true) - $startedAt) * 1000;
+        }
+    }
+
+    private function performPrewrite(string $externalId, FingerprintContext $content, ?FingerprintContext $title, DateTimeImmutable $createdAt): RedisPrewriteResult
     {
         if (!$this->enabled()) {
             return RedisPrewriteResult::skipped();
@@ -65,7 +75,17 @@ final class RedisDedupIndex
         }
     }
 
-    public function mightContainExact(string $externalId, FingerprintContext $content, ?FingerprintContext $title, ?DateTimeImmutable $now = null): ?bool
+    public function mightContainExact(string $externalId, FingerprintContext $content, ?FingerprintContext $title, ?float &$milliseconds = null): ?bool
+    {
+        $startedAt = microtime(true);
+        try {
+            return $this->performMightContainExact($externalId, $content, $title);
+        } finally {
+            $milliseconds = (microtime(true) - $startedAt) * 1000;
+        }
+    }
+
+    private function performMightContainExact(string $externalId, FingerprintContext $content, ?FingerprintContext $title): ?bool
     {
         if (!$this->enabled() || !(bool) config('dedupe.redis_index.exact.enabled', true)) {
             return null;
@@ -86,7 +106,17 @@ final class RedisDedupIndex
      * @param list<array{int, string}> $bands
      * @return array<string, bool>|null
      */
-    public function mightContainMinhashBands(array $bands, string $scope, ?DateTimeImmutable $now = null): ?array
+    public function mightContainMinhashBands(array $bands, string $scope, ?DateTimeImmutable $now = null, ?float &$milliseconds = null): ?array
+    {
+        $startedAt = microtime(true);
+        try {
+            return $this->performMightContainMinhashBands($bands, $scope, $now);
+        } finally {
+            $milliseconds = (microtime(true) - $startedAt) * 1000;
+        }
+    }
+
+    private function performMightContainMinhashBands(array $bands, string $scope, ?DateTimeImmutable $now): ?array
     {
         if (!$this->enabled() || !(bool) config('dedupe.redis_index.minhash.enabled', true)) {
             return null;

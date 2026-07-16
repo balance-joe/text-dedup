@@ -80,9 +80,10 @@ final class DedupeService
         $prefilterTimings = [];
         // insert_on_check 的并发正确性仍由 PostgreSQL唯一约束与精确预过滤兜底；
         // 只读检查才允许使用 Bloom False 跳过 PG。
+        $exactRedisMilliseconds = 0.0;
         $exactBloom = $insertOnCheck
             ? null
-            : $this->redisIndex->mightContainExact($documentId, $contentContext, $titleContext);
+            : $this->redisIndex->mightContainExact($documentId, $contentContext, $titleContext, $exactRedisMilliseconds);
         $prefilter = $exactBloom === false
             ? null
             : $this->findPrefilterDuplicate(
@@ -95,6 +96,7 @@ final class DedupeService
         if ($exactBloom === false) {
             $prefilterTimings = ['redis_bloom_skipped_pg' => true];
         }
+        $prefilterTimings['redis_ms'] = round($exactRedisMilliseconds, 3);
         $performance['prefilter'] = round((microtime(true) - $prefilterStartedAt) * 1000, 2);
         $performance['prefilter_details'] = $prefilterTimings;
         if ($prefilter !== null) {
@@ -204,7 +206,9 @@ final class DedupeService
                 ->get(ConnectionResolverInterface::class)
                 ->connection('default');
             $createdAt = new DateTimeImmutable('now', new DateTimeZone((string) config('dedupe.redis_index.timezone', 'Asia/Shanghai')));
-            $this->redisIndex->prewrite($documentId, $contentContext, $titleContext, $createdAt);
+            $redisPrewriteMilliseconds = 0.0;
+            $this->redisIndex->prewrite($documentId, $contentContext, $titleContext, $createdAt, $redisPrewriteMilliseconds);
+            $performance['redis_prewrite'] = round($redisPrewriteMilliseconds, 3);
             $writeStartedAt = microtime(true);
             $write = $connection->transaction(
                 fn (): array => $this->insertNewDocument($connection, $documentId, $contentContext, $titleContext, $createdAt),
@@ -658,7 +662,8 @@ final class DedupeService
             return $result;
         }
 
-        $bloomResult = $this->redisIndex->mightContainMinhashBands($bands, $scope);
+        $redisMilliseconds = 0.0;
+        $bloomResult = $this->redisIndex->mightContainMinhashBands($bands, $scope, null, $redisMilliseconds);
         if ($bloomResult !== null) {
             $normalizedBands = array_values(array_filter(
                 $normalizedBands,
@@ -672,6 +677,8 @@ final class DedupeService
         }
         if ($normalizedBands === []) {
             $timings = $this->emptyQueryTimings();
+            $timings['redis_ms'] = round($redisMilliseconds, 3);
+            $timings['redis_bloom_skipped_pg'] = true;
             return $result;
         }
 
@@ -701,6 +708,8 @@ final class DedupeService
         }
 
         $timings = $this->queryTimings($select, (microtime(true) - $mappingStartedAt) * 1000);
+        $timings['redis_ms'] = round($redisMilliseconds, 3);
+        $timings['redis_bloom_skipped_pg'] = false;
 
         return $result;
     }
@@ -1115,6 +1124,7 @@ final class DedupeService
             ],
             'prefilter' => 0.0,
             'prefilter_details' => [],
+            'redis_prewrite' => 0.0,
             'content_pipeline' => [
                 'simhash' => 0.0,
                 'minhash' => 0.0,
