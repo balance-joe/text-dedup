@@ -178,7 +178,8 @@ php bin/hyperf.php dedupe:redis-index status \
   --generation=g2026071601
 ```
 
-构建过程中可传入预计的正文 MinHash 总项数，命令会只读采样 RedisBloom 并估算剩余时间：
+构建过程中可传入预计的正文 MinHash 总行数；builder 会把实际处理的 PostgreSQL
+行数写入 generation 元数据，status 采样该计数并估算剩余时间：
 
 ```bash
 php bin/hyperf.php dedupe:redis-index status \

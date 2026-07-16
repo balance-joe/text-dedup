@@ -97,30 +97,6 @@ final class RedisIndexBuilder
         return $deleted;
     }
 
-    /** 通过 RedisBloom 自身计数只读估算 generation 已写入的 MinHash 项数。 */
-    public function minhashItemCount(string $generation, string $scope = 'content', ?int &$keyCount = null): int
-    {
-        $redis = $this->redis();
-        $iterator = null;
-        $keys = [];
-        do {
-            $page = $redis->scan($iterator, $this->keys->minhashPattern($generation, $scope), 500);
-            if (is_array($page)) {
-                array_push($keys, ...$page);
-            }
-        } while ($iterator !== 0);
-        $keys = array_values(array_unique($keys));
-        $keyCount = count($keys);
-
-        $total = 0;
-        // BF.INFO 在不同 RedisBloom/RESP 组合下可能返回平铺数组、map 或嵌套键值对；
-        // 进度命令频率很低，逐 key 读取比 Pipeline 响应再嵌套一层更容易可靠兼容。
-        foreach ($keys as $key) {
-            $total += $this->bloomItemsInserted($redis->rawCommand('BF.INFO', $key));
-        }
-        return $total;
-    }
-
     private function buildExact(Redis $redis, string $generation, int $batchSize, ?callable $progress): void
     {
         $connection = $this->connection();
@@ -213,6 +189,11 @@ final class RedisIndexBuilder
                         $this->minhash->addBandValues($redis, $generation, $bucket, $scope, $bandIndex, $values);
                     }
                     $redis->set($checkpointKey, json_encode($last, JSON_THROW_ON_ERROR));
+                    $redis->hIncrBy(
+                        $this->keys->generationMeta($generation),
+                        "{$scope}_minhash_rows_processed",
+                        count($rows),
+                    );
                     $progress?->__invoke("{$scope} minhash band={$bandIndex} doc_pk={$last['doc_pk']}");
                 } while (count($rows) === $batchSize);
                 $redis->del($checkpointKey);
@@ -232,34 +213,6 @@ final class RedisIndexBuilder
     private function redis(): Redis
     {
         return $this->redisFactory->get('default');
-    }
-
-    private function bloomItemsInserted(mixed $info): int
-    {
-        if (!is_array($info)) {
-            return 0;
-        }
-        foreach ($info as $index => $value) {
-            if (is_string($index) && $this->normalizedInfoName($index) === 'numberofitemsinserted') {
-                return max(0, (int) $value);
-            }
-            if (is_int($index) && is_string($value)
-                && $this->normalizedInfoName($value) === 'numberofitemsinserted') {
-                return max(0, (int) ($info[$index + 1] ?? 0));
-            }
-            if (is_array($value)) {
-                $nested = $this->bloomItemsInserted($value);
-                if ($nested > 0) {
-                    return $nested;
-                }
-            }
-        }
-        return 0;
-    }
-
-    private function normalizedInfoName(string $value): string
-    {
-        return strtolower((string) preg_replace('/[^a-z]/i', '', $value));
     }
 
     private function qualified(string $table): string

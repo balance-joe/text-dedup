@@ -17,7 +17,6 @@ final class RedisKeyFactoryTest extends TestCase
         self::assertSame('dedupe:test:meta:active_generation', $keys->activeGeneration());
         self::assertSame('dedupe:test:g000001:exact:content_hash', $keys->exactHash('g000001', 'content_hash'));
         self::assertSame('dedupe:test:g000001:minhash:title:d20260716:b31', $keys->minhash('g000001', 'title', 'd20260716', 31));
-        self::assertSame('dedupe:test:g000001:minhash:content:*', $keys->minhashPattern('g000001', 'content'));
     }
 
     public function testRejectsUnsafeGenerationNames(): void

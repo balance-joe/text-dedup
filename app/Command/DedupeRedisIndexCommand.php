@@ -95,22 +95,20 @@ final class DedupeRedisIndexCommand extends Command
         }
         $expected = max(0, (int) $this->input->getOption('expected-items'));
         $sampleSeconds = max(0, min(60, (int) $this->input->getOption('sample-seconds')));
-        $keyCount = 0;
-        $first = $this->builder->minhashItemCount($generation, 'content', $keyCount);
-        $this->line('content_minhash_keys=' . number_format($keyCount));
-        $this->line('content_minhash_items=' . number_format($first));
+        $first = max(0, (int) ($metadata['content_minhash_rows_processed'] ?? 0));
+        $this->line('content_minhash_rows_processed=' . number_format($first));
         if ($expected > 0) {
             $this->line(sprintf('progress=%.2f%%', min(100, $first * 100 / $expected)));
         }
         if (($metadata['status'] ?? '') === 'building' && $sampleSeconds > 0) {
             $startedAt = microtime(true);
             sleep($sampleSeconds);
-            $secondKeyCount = 0;
-            $second = $this->builder->minhashItemCount($generation, 'content', $secondKeyCount);
+            $latest = $this->builder->status($generation);
+            $second = max(0, (int) ($latest['content_minhash_rows_processed'] ?? 0));
             $elapsed = max(0.001, microtime(true) - $startedAt);
             $rate = max(0.0, ($second - $first) / $elapsed);
-            $this->line('content_minhash_items_after_sample=' . number_format($second));
-            $this->line('items_per_second=' . number_format($rate, 0, '.', ''));
+            $this->line('content_minhash_rows_after_sample=' . number_format($second));
+            $this->line('rows_per_second=' . number_format($rate, 0, '.', ''));
             if ($expected > 0 && $rate > 0) {
                 $remaining = max(0, $expected - $second);
                 $etaSeconds = (int) ceil($remaining / $rate);
