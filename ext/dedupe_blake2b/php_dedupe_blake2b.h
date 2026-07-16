@@ -3,6 +3,6 @@
 
 extern zend_module_entry dedupe_blake2b_module_entry;
 #define phpext_dedupe_blake2b_ptr &dedupe_blake2b_module_entry
-#define PHP_DEDUPE_BLAKE2B_VERSION "0.4.0"
+#define PHP_DEDUPE_BLAKE2B_VERSION "0.6.0"
 
 #endif

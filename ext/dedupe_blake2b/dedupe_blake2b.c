@@ -44,6 +44,102 @@ static void initialize_minhash_parameters(void)
     }
 }
 
+/*
+ * Populate a set with the same UTF-8 character n-grams produced by
+ * App\Service\Ngram::items().  Keeping this here avoids creating a PHP array
+ * for every candidate document during the MinHash exact-Jaccard check.
+ */
+static zend_result populate_ngram_set(HashTable *grams, zend_string *text, zend_long size)
+{
+    const unsigned char *input = (const unsigned char *) ZSTR_VAL(text);
+    size_t length = ZSTR_LEN(text);
+    size_t *offsets;
+    size_t index = 0, character_count = 0, sequence_length, gram_index;
+    uint32_t codepoint;
+
+    if (length == 0) return SUCCESS;
+
+    offsets = safe_emalloc(length + 1, sizeof(size_t), 0);
+    while (index < length) {
+        offsets[character_count++] = index;
+        if (input[index] <= 0x7f) {
+            ++index;
+            continue;
+        }
+
+        if (input[index] >= 0xc2 && input[index] <= 0xdf) {
+            sequence_length = 2;
+            codepoint = input[index] & 0x1f;
+        } else if (input[index] >= 0xe0 && input[index] <= 0xef) {
+            sequence_length = 3;
+            codepoint = input[index] & 0x0f;
+        } else if (input[index] >= 0xf0 && input[index] <= 0xf4) {
+            sequence_length = 4;
+            codepoint = input[index] & 0x07;
+        } else {
+            /* preg_match_all('/./us') also yields no grams for invalid UTF-8. */
+            efree(offsets);
+            return SUCCESS;
+        }
+
+        if (index + sequence_length > length) {
+            efree(offsets);
+            return SUCCESS;
+        }
+        for (size_t byte_index = 1; byte_index < sequence_length; ++byte_index) {
+            if ((input[index + byte_index] & 0xc0) != 0x80) {
+                efree(offsets);
+                return SUCCESS;
+            }
+            codepoint = (codepoint << 6) | (input[index + byte_index] & 0x3f);
+        }
+        if ((sequence_length == 3 && codepoint < 0x800)
+            || (sequence_length == 4 && codepoint < 0x10000)
+            || (codepoint >= 0xd800 && codepoint <= 0xdfff)
+            || codepoint > 0x10ffff) {
+            efree(offsets);
+            return SUCCESS;
+        }
+        index += sequence_length;
+    }
+    offsets[character_count] = length;
+
+    if (character_count <= (size_t) size) {
+        zend_hash_str_add_empty_element(grams, ZSTR_VAL(text), length);
+    } else {
+        for (gram_index = 0; gram_index <= character_count - (size_t) size; ++gram_index) {
+            zend_hash_str_add_empty_element(
+                grams,
+                ZSTR_VAL(text) + offsets[gram_index],
+                offsets[gram_index + size] - offsets[gram_index]
+            );
+        }
+    }
+    efree(offsets);
+    return SUCCESS;
+}
+
+static double ngram_jaccard(HashTable *left_grams, HashTable *right_grams)
+{
+    HashTable *smaller, *larger;
+    zend_string *key;
+    zval *entry;
+    uint32_t intersection = 0;
+    uint32_t left_count = zend_hash_num_elements(left_grams);
+    uint32_t right_count = zend_hash_num_elements(right_grams);
+
+    if (left_count == 0 && right_count == 0) return 1.0;
+    if (left_count == 0 || right_count == 0) return 0.0;
+
+    smaller = left_count <= right_count ? left_grams : right_grams;
+    larger = smaller == left_grams ? right_grams : left_grams;
+    ZEND_HASH_FOREACH_STR_KEY_VAL(smaller, key, entry) {
+        if (key != NULL && zend_hash_exists(larger, key)) ++intersection;
+    } ZEND_HASH_FOREACH_END();
+
+    return (double) intersection / (left_count + right_count - intersection);
+}
+
 PHP_FUNCTION(dedupe_blake2b)
 {
     zend_string *input;
@@ -161,6 +257,72 @@ PHP_FUNCTION(dedupe_uint64_decimals)
     } ZEND_HASH_FOREACH_END();
 }
 
+PHP_FUNCTION(dedupe_jaccard_ngram)
+{
+    zend_string *left, *right;
+    zend_long size = 5;
+    HashTable left_grams, right_grams;
+
+    ZEND_PARSE_PARAMETERS_START(2, 3)
+        Z_PARAM_STR(left)
+        Z_PARAM_STR(right)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG(size)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (size < 1) {
+        zend_argument_value_error(3, "must be greater than 0");
+        RETURN_THROWS();
+    }
+
+    zend_hash_init(&left_grams, 0, NULL, NULL, 0);
+    zend_hash_init(&right_grams, 0, NULL, NULL, 0);
+    populate_ngram_set(&left_grams, left, size);
+    populate_ngram_set(&right_grams, right, size);
+
+    double score = ngram_jaccard(&left_grams, &right_grams);
+    zend_hash_destroy(&left_grams);
+    zend_hash_destroy(&right_grams);
+    RETURN_DOUBLE(score);
+}
+
+PHP_FUNCTION(dedupe_jaccard_ngram_many)
+{
+    zend_string *left;
+    zval *rights, *right;
+    zend_long size = 5;
+    HashTable left_grams, right_grams;
+
+    ZEND_PARSE_PARAMETERS_START(2, 3)
+        Z_PARAM_STR(left)
+        Z_PARAM_ARRAY(rights)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG(size)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (size < 1) {
+        zend_argument_value_error(3, "must be greater than 0");
+        RETURN_THROWS();
+    }
+
+    zend_hash_init(&left_grams, 0, NULL, NULL, 0);
+    populate_ngram_set(&left_grams, left, size);
+    array_init_size(return_value, zend_hash_num_elements(Z_ARRVAL_P(rights)));
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(rights), right) {
+        ZVAL_DEREF(right);
+        if (Z_TYPE_P(right) != IS_STRING) {
+            zend_hash_destroy(&left_grams);
+            zend_type_error("dedupe_jaccard_ngram_many(): every right text must be a string");
+            RETURN_THROWS();
+        }
+        zend_hash_init(&right_grams, 0, NULL, NULL, 0);
+        populate_ngram_set(&right_grams, Z_STR_P(right), size);
+        add_next_index_double(return_value, ngram_jaccard(&left_grams, &right_grams));
+        zend_hash_destroy(&right_grams);
+    } ZEND_HASH_FOREACH_END();
+    zend_hash_destroy(&left_grams);
+}
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_blake2b, 0, 1, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, input, IS_STRING, 0)
     ZEND_ARG_TYPE_INFO(0, length, IS_LONG, 0)
@@ -178,11 +340,25 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_uint64_decimals, 0, 1, IS
     ZEND_ARG_TYPE_INFO(0, values, IS_ARRAY, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_jaccard_ngram, 0, 2, IS_DOUBLE, 0)
+    ZEND_ARG_TYPE_INFO(0, left, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, right, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, size, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_dedupe_jaccard_ngram_many, 0, 2, IS_ARRAY, 0)
+    ZEND_ARG_TYPE_INFO(0, left, IS_STRING, 0)
+    ZEND_ARG_TYPE_INFO(0, rights, IS_ARRAY, 0)
+    ZEND_ARG_TYPE_INFO(0, size, IS_LONG, 0)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry dedupe_blake2b_functions[] = {
     PHP_FE(dedupe_blake2b, arginfo_dedupe_blake2b)
     PHP_FE(dedupe_minhash_signature, arginfo_dedupe_minhash_signature)
     PHP_FE(dedupe_simhash, arginfo_dedupe_simhash)
     PHP_FE(dedupe_uint64_decimals, arginfo_dedupe_uint64_decimals)
+    PHP_FE(dedupe_jaccard_ngram, arginfo_dedupe_jaccard_ngram)
+    PHP_FE(dedupe_jaccard_ngram_many, arginfo_dedupe_jaccard_ngram_many)
     PHP_FE_END
 };
 

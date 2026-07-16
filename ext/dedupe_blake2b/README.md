@@ -32,6 +32,20 @@ dedupe_uint64_decimals(array $values): array
 
 输入是若干个八字节大端序二进制字符串，输出是对应的无符号十进制字符串。MinHash 的完整签名和分桶结果必须使用字符串表示，否则超过 PHP 有符号整数上限的值会溢出。批量转换可避免在 PHP 中反复进行高低位除法。
 
+原生精确 Jaccard：
+
+```php
+dedupe_jaccard_ngram(string $left, string $right, int $size = 5): float
+```
+
+批量接口：
+
+```php
+dedupe_jaccard_ngram_many(string $left, array $rights, int $size = 5): array
+```
+
+函数以 UTF-8 字符切分、生成去重后的 n-gram 集合并计算交并比。`DedupeService` 在 MinHash 候选精排时使用批量接口：待查文章的左侧集合只创建一次，再依次处理候选文章，避免逐候选重复计算左侧文本。无效 UTF-8 与现有 `/./us` 实现一样视为无 gram；扩展未加载时仍使用现有 PHP 实现。
+
 它返回**二进制** BLAKE2b 摘要，摘要长度可为 1 到 64 字节。
 
 本项目的 MinHash 必须使用 Python 代码中的：
@@ -156,6 +170,20 @@ php -r 'var_dump(dedupe_uint64_decimals([hex2bin("0000000000000000"), hex2bin("f
 ```
 
 应输出 `0` 和 `18446744073709551615` 两个字符串。
+
+确认原生 Jaccard 与集合语义：
+
+```bash
+php -r 'var_dump(dedupe_jaccard_ngram("甲乙丙丁戊己", "甲乙丙丁戊庚", 5));'
+```
+
+应输出约 `0.3333333333333333`（两个文本各有两个五元语法，交集一个）。
+
+确认候选批量评分：
+
+```bash
+php -r 'var_dump(dedupe_jaccard_ngram_many("甲乙丙丁戊己", ["甲乙丙丁戊庚", "完全不同"], 5));'
+```
 
 最后运行项目兼容性验证：
 
