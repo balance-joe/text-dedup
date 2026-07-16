@@ -18,12 +18,12 @@ return [
         'port' => (int) env('REDIS_PORT', 6379),
         'db' => (int) env('REDIS_DB', 0),
         'pool' => [
-            'min_connections' => 1,
-            'max_connections' => 10,
-            'connect_timeout' => 10.0,
-            'wait_timeout' => 3.0,
-            'heartbeat' => -1,
-            'max_idle_time' => (float) env('REDIS_MAX_IDLE_TIME', 60),
+            'min_connections' => max(0, (int) env('REDIS_POOL_MIN_CONNECTIONS', 1)),
+            'max_connections' => max(1, (int) env('REDIS_POOL_MAX_CONNECTIONS', 4)),
+            'connect_timeout' => max(0.1, (float) env('REDIS_POOL_CONNECT_TIMEOUT', 10)),
+            'wait_timeout' => max(0.1, (float) env('REDIS_POOL_WAIT_TIMEOUT', 3)),
+            'heartbeat' => (float) env('REDIS_POOL_HEARTBEAT', -1),
+            'max_idle_time' => max(1, (float) env('REDIS_MAX_IDLE_TIME', 60)),
         ],
     ],
 ];

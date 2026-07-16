@@ -36,10 +36,29 @@ return [
         'max_candidates' => max(1, (int) env('DEDUPE_MINHASH_MAX_CANDIDATES', 50)),
         'api_max_checks' => max(1, (int) env('DEDUPE_API_MAX_MINHASH_CHECKS', 200)),
     ],
-    'bloom' => [
-        'enabled' => in_array(strtolower((string) env('DEDUPE_BLOOM_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true),
-        'key_prefix' => (string) env('DEDUPE_BLOOM_KEY_PREFIX', 'dedupe:bf:v1'),
-        'retention_days' => max(1, (int) env('DEDUPE_BLOOM_RETENTION_DAYS', 10)),
+    'redis_index' => [
+        'enabled' => in_array(strtolower((string) env('DEDUPE_REDIS_INDEX_ENABLED', '0')), ['1', 'true', 'yes', 'on'], true),
+        'prefix' => (string) env('DEDUPE_REDIS_INDEX_PREFIX', 'dedupe'),
+        'timezone' => (string) env('DEDUPE_REDIS_INDEX_TIMEZONE', 'Asia/Shanghai'),
+        'retention_days' => max(1, (int) env('DEDUPE_REDIS_INDEX_RETENTION_DAYS', 10)),
+        'grace_days' => max(0, (int) env('DEDUPE_REDIS_INDEX_GRACE_DAYS', 2)),
+        // band created_at 迁移与索引验收完成后才允许开启。
+        'date_filter_enabled' => in_array(strtolower((string) env('DEDUPE_BAND_DATE_FILTER_ENABLED', '0')), ['1', 'true', 'yes', 'on'], true),
+        // add-column 完成后先开启写入；全量回填和索引验收后再开启 date_filter_enabled。
+        'band_created_at_write_enabled' => in_array(strtolower((string) env('DEDUPE_BAND_CREATED_AT_WRITE_ENABLED', '0')), ['1', 'true', 'yes', 'on'], true),
+        'expansion' => max(1, (int) env('DEDUPE_BLOOM_EXPANSION', 2)),
+        'exact' => [
+            'enabled' => in_array(strtolower((string) env('DEDUPE_EXACT_BLOOM_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true),
+            'error_rate' => max(0.000001, (float) env('DEDUPE_EXACT_BLOOM_ERROR_RATE', '0.0001')),
+            'capacity' => max(1, (int) env('DEDUPE_EXACT_BLOOM_CAPACITY', 10000000)),
+            'external_id_capacity' => max(1, (int) env('DEDUPE_EXACT_BLOOM_EXTERNAL_ID_CAPACITY', 10000000)),
+        ],
+        'minhash' => [
+            'enabled' => in_array(strtolower((string) env('DEDUPE_MINHASH_BLOOM_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true),
+            'error_rate' => max(0.000001, (float) env('DEDUPE_MINHASH_BLOOM_ERROR_RATE', '0.00001')),
+            'content_daily_capacity' => max(1, (int) env('DEDUPE_MINHASH_BLOOM_CONTENT_DAILY_CAPACITY', 1300000)),
+            'title_daily_capacity' => max(1, (int) env('DEDUPE_MINHASH_BLOOM_TITLE_DAILY_CAPACITY', 1300000)),
+        ],
     ],
     'vector' => [
         'enabled' => in_array(strtolower((string) env('DEDUPE_VECTOR_ENABLED', '0')), ['1', 'true', 'yes', 'on'], true),
