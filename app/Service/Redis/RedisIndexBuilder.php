@@ -9,9 +9,9 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Hyperf\Database\ConnectionInterface;
 use Hyperf\Database\ConnectionResolverInterface;
+use Hyperf\Redis\Redis;
 use Hyperf\Redis\RedisFactory;
 use InvalidArgumentException;
-use Redis;
 
 use function Hyperf\Config\config;
 
@@ -207,9 +207,7 @@ final class RedisIndexBuilder
 
     private function redis(): Redis
     {
-        /** @var Redis $redis */
-        $redis = $this->redisFactory->get('default');
-        return $redis;
+        return $this->redisFactory->get('default');
     }
 
     private function qualified(string $table): string

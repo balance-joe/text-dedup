@@ -7,8 +7,8 @@ namespace HyperfTest\Unit;
 use App\Service\FingerprintContext;
 use App\Service\Redis\ExactHashBloomIndex;
 use App\Service\Redis\RedisKeyFactory;
+use Hyperf\Redis\Redis;
 use PHPUnit\Framework\TestCase;
-use Redis;
 
 final class ExactHashBloomIndexTest extends TestCase
 {
@@ -36,25 +36,33 @@ final class RecordingBloomRedis extends Redis
     /** @var list<list<mixed>> */
     public array $commands = [];
 
-    private int $pending = 0;
-
-    public function multi(int $value = Redis::MULTI): Redis|bool
+    public function __construct()
     {
-        $this->pending = 0;
-        return $this;
     }
 
     public function rawCommand(string $command, mixed ...$args): mixed
     {
         $this->commands[] = [$command, ...$args];
-        if (strtoupper($command) === 'BF.ADD') {
-            ++$this->pending;
-        }
         return true;
     }
 
-    public function exec(): Redis|array|false
+    public function pipeline(?callable $callback = null)
     {
-        return array_fill(0, $this->pending, 1);
+        $pipeline = new RecordingNativePipelineRedis();
+        $callback?->__invoke($pipeline);
+        array_push($this->commands, ...$pipeline->commands);
+        return array_fill(0, count($pipeline->commands), 1);
+    }
+}
+
+final class RecordingNativePipelineRedis extends \Redis
+{
+    /** @var list<list<mixed>> */
+    public array $commands = [];
+
+    public function rawCommand(string $command, mixed ...$args): mixed
+    {
+        $this->commands[] = [$command, ...$args];
+        return $this;
     }
 }

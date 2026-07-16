@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Service\Redis;
 
 use App\Service\MinHash;
-use Redis;
+use Hyperf\Redis\Redis;
 use RuntimeException;
 use Throwable;
 
@@ -31,11 +31,11 @@ final class MinhashBloomIndex
             $this->ensureFilter($redis, $key, $scope);
             $redis->expireAt($key, $this->buckets->expireAt($bucket));
         }
-        $pipeline = $redis->multi(Redis::PIPELINE);
-        foreach ($normalized as [$index, $value]) {
-            $pipeline->rawCommand('BF.ADD', $this->keys->minhash($generation, $scope, $bucket, $index), $value);
-        }
-        $responses = $pipeline->exec();
+        $responses = $redis->pipeline(function (\Redis $pipeline) use ($normalized, $generation, $scope, $bucket): void {
+            foreach ($normalized as [$index, $value]) {
+                $pipeline->rawCommand('BF.ADD', $this->keys->minhash($generation, $scope, $bucket, $index), $value);
+            }
+        });
         if (!is_array($responses) || count($responses) !== count($normalized) || in_array(false, $responses, true)) {
             throw new RuntimeException('MinHash Bloom pipeline failed.');
         }
@@ -78,19 +78,19 @@ final class MinhashBloomIndex
                     $checks[] = [$index, $value, $this->keys->minhash($generation, $scope, $bucket, $index)];
                 }
             }
-            $pipeline = $redis->multi(Redis::PIPELINE);
-            foreach ($checks as [, , $key]) {
-                $pipeline->exists($key);
-            }
-            $exists = $pipeline->exec();
+            $exists = $redis->pipeline(static function (\Redis $pipeline) use ($checks): void {
+                foreach ($checks as [, , $key]) {
+                    $pipeline->exists($key);
+                }
+            });
             if (!is_array($exists) || count($exists) !== count($checks) || in_array(0, $exists, true) || in_array(false, $exists, true)) {
                 return null;
             }
-            $pipeline = $redis->multi(Redis::PIPELINE);
-            foreach ($checks as [, $value, $key]) {
-                $pipeline->rawCommand('BF.EXISTS', $key, $value);
-            }
-            $matches = $pipeline->exec();
+            $matches = $redis->pipeline(static function (\Redis $pipeline) use ($checks): void {
+                foreach ($checks as [, $value, $key]) {
+                    $pipeline->rawCommand('BF.EXISTS', $key, $value);
+                }
+            });
             if (!is_array($matches) || count($matches) !== count($checks)) {
                 return null;
             }

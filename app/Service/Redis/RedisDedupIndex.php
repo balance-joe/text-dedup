@@ -6,8 +6,8 @@ namespace App\Service\Redis;
 
 use App\Service\FingerprintContext;
 use DateTimeImmutable;
+use Hyperf\Redis\Redis;
 use Hyperf\Redis\RedisFactory;
-use Redis;
 use Throwable;
 
 use function Hyperf\Config\config;
@@ -110,8 +110,6 @@ final class RedisDedupIndex
 
     private function redis(): Redis
     {
-        /** @var Redis $redis */
-        $redis = $this->redisFactory->get('default');
-        return $redis;
+        return $this->redisFactory->get('default');
     }
 }

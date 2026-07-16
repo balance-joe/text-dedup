@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Service\Redis;
 
 use App\Service\FingerprintContext;
-use Redis;
+use Hyperf\Redis\Redis;
 use RuntimeException;
 use Throwable;
 
@@ -49,11 +49,11 @@ final class ExactHashBloomIndex
         foreach ($values as $key => $_) {
             $this->ensureFilter($redis, $key, $key === $this->keys->exactExternalId($generation));
         }
-        $pipeline = $redis->multi(Redis::PIPELINE);
-        foreach ($values as $key => $value) {
-            $pipeline->rawCommand('BF.ADD', $key, $value);
-        }
-        $responses = $pipeline->exec();
+        $responses = $redis->pipeline(static function (\Redis $pipeline) use ($values): void {
+            foreach ($values as $key => $value) {
+                $pipeline->rawCommand('BF.ADD', $key, $value);
+            }
+        });
         if (!is_array($responses) || count($responses) !== count($values) || in_array(false, $responses, true)) {
             throw new RuntimeException('Exact Hash Bloom pipeline failed.');
         }
@@ -71,19 +71,19 @@ final class ExactHashBloomIndex
             if ($titleHash !== null) {
                 $checks[] = [$this->keys->exactHash($generation, 'title_hash'), 'title:' . $titleHash];
             }
-            $pipeline = $redis->multi(Redis::PIPELINE);
-            foreach ($checks as [$key]) {
-                $pipeline->exists($key);
-            }
-            $exists = $pipeline->exec();
+            $exists = $redis->pipeline(static function (\Redis $pipeline) use ($checks): void {
+                foreach ($checks as [$key]) {
+                    $pipeline->exists($key);
+                }
+            });
             if (!is_array($exists) || count($exists) !== count($checks) || in_array(0, $exists, true) || in_array(false, $exists, true)) {
                 return null;
             }
-            $pipeline = $redis->multi(Redis::PIPELINE);
-            foreach ($checks as [$key, $value]) {
-                $pipeline->rawCommand('BF.EXISTS', $key, $value);
-            }
-            $matches = $pipeline->exec();
+            $matches = $redis->pipeline(static function (\Redis $pipeline) use ($checks): void {
+                foreach ($checks as [$key, $value]) {
+                    $pipeline->rawCommand('BF.EXISTS', $key, $value);
+                }
+            });
             if (!is_array($matches) || count($matches) !== count($checks)) {
                 return null;
             }

@@ -6,8 +6,8 @@ namespace HyperfTest\Unit;
 
 use App\Service\Redis\RedisIndexGenerationManager;
 use App\Service\Redis\RedisKeyFactory;
+use Hyperf\Redis\Redis;
 use PHPUnit\Framework\TestCase;
-use Redis;
 
 final class RedisIndexGenerationManagerTest extends TestCase
 {
@@ -34,6 +34,10 @@ final class GenerationSnapshotRedis extends Redis
 
     /** @var list<mixed> */
     public array $lastArgs = [];
+
+    public function __construct()
+    {
+    }
 
     public function eval(string $script, array $args = [], int $num_keys = 0): mixed
     {
