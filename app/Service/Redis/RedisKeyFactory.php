@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Redis;
 
+use App\Service\DedupeParameters;
 use InvalidArgumentException;
 
 use function Hyperf\Config\config;
@@ -47,7 +48,7 @@ final class RedisKeyFactory
         if (!in_array($scope, ['content', 'title'], true)) {
             throw new InvalidArgumentException("Unsupported fingerprint scope: {$scope}");
         }
-        if ($bandIndex < 0 || $bandIndex >= 32) {
+        if ($bandIndex < 0 || $bandIndex >= DedupeParameters::minhashBands()) {
             throw new InvalidArgumentException("Invalid MinHash band index: {$bandIndex}");
         }
         return sprintf('%s:%s:minhash:%s:%s:b%d', $this->prefix(), $this->generation($generation), $scope, $this->bucket($bucket), $bandIndex);

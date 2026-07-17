@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Redis;
 
+use App\Service\DedupeParameters;
 use Hyperf\Database\ConnectionInterface;
 use Hyperf\Database\ConnectionResolverInterface;
 use InvalidArgumentException;
@@ -12,14 +13,6 @@ use function Hyperf\Config\config;
 
 final class BandSchemaManager
 {
-    /** @var array<string, int> */
-    private const TABLES = [
-        'simhash_band' => 8,
-        'title_simhash_band' => 8,
-        'minhash_band' => 32,
-        'title_minhash_band' => 32,
-    ];
-
     public function __construct(private readonly ConnectionResolverInterface $connections)
     {
     }
@@ -29,7 +22,7 @@ final class BandSchemaManager
     {
         $connection = $this->connection();
         $result = [];
-        foreach (self::TABLES as $table => $_) {
+        foreach ($this->tables() as $table => $_) {
             $qualified = $this->qualified($table);
             $present = $connection->selectOne(
                 'SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?) AS present',
@@ -55,7 +48,7 @@ final class BandSchemaManager
     public function addColumn(): void
     {
         $connection = $this->connection();
-        foreach (array_keys(self::TABLES) as $table) {
+        foreach (array_keys($this->tables()) as $table) {
             $connection->statement("ALTER TABLE {$this->qualified($table)} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ");
         }
     }
@@ -65,7 +58,7 @@ final class BandSchemaManager
     {
         $connection = $this->connection();
         $document = $this->qualified('document_fingerprint');
-        foreach (self::TABLES as $parent => $partitions) {
+        foreach ($this->tables() as $parent => $partitions) {
             for ($index = 0; $index < $partitions; ++$index) {
                 $leafName = "{$parent}_p{$index}";
                 $leaf = $this->qualified($leafName);
@@ -96,7 +89,7 @@ final class BandSchemaManager
     public function createIndexes(?callable $progress = null): void
     {
         $connection = $this->connection();
-        foreach (self::TABLES as $parent => $partitions) {
+        foreach ($this->tables() as $parent => $partitions) {
             for ($index = 0; $index < $partitions; ++$index) {
                 $leaf = "{$parent}_p{$index}";
                 $name = "{$leaf}_value_created_doc_idx";
@@ -128,7 +121,7 @@ final class BandSchemaManager
             throw new \RuntimeException('Enable DEDUPE_BAND_CREATED_AT_WRITE_ENABLED before enforcing NOT NULL.');
         }
         $connection = $this->connection();
-        foreach (array_keys(self::TABLES) as $table) {
+        foreach (array_keys($this->tables()) as $table) {
             $qualified = $this->qualified($table);
             $connection->statement("ALTER TABLE {$qualified} ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP");
             $connection->statement("ALTER TABLE {$qualified} ALTER COLUMN created_at SET NOT NULL");
@@ -139,7 +132,7 @@ final class BandSchemaManager
     {
         $connection = $this->connection();
         $result = [];
-        foreach (self::TABLES as $table => $_) {
+        foreach ($this->tables() as $table => $_) {
             $qualified = $this->qualified($table);
             $row = $connection->selectOne("SELECT count(*) AS rows, count(*) FILTER (WHERE created_at IS NULL) AS missing FROM {$qualified}");
             $result[$table] = ['rows' => (int) $row->rows, 'missing_created_at' => (int) $row->missing];
@@ -158,6 +151,17 @@ final class BandSchemaManager
         $connection->statement("SET lock_timeout = '3s'");
         $connection->statement("SET idle_in_transaction_session_timeout = '60s'");
         return $connection;
+    }
+
+    /** @return array<string, int> */
+    private function tables(): array
+    {
+        return [
+            'simhash_band' => DedupeParameters::simhashBands(),
+            'title_simhash_band' => DedupeParameters::simhashBands(),
+            'minhash_band' => DedupeParameters::minhashBands(),
+            'title_minhash_band' => DedupeParameters::minhashBands(),
+        ];
     }
 
     private function schema(): string

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Redis;
 
+use App\Service\DedupeParameters;
 use App\Service\FingerprintContext;
 use Hyperf\Redis\Redis;
 use RuntimeException;
@@ -128,7 +129,7 @@ final class ExactHashBloomIndex
     private function madd(Redis $redis, string $key, array $values): void
     {
         $values = array_values(array_unique(array_filter($values, static fn (string $value): bool => $value !== '')));
-        foreach (array_chunk($values, 1000) as $chunk) {
+        foreach (array_chunk($values, DedupeParameters::bloomBatchSize()) as $chunk) {
             $response = $redis->rawCommand('BF.MADD', $key, ...$chunk);
             if (!is_array($response) || count($response) !== count($chunk)) {
                 throw new RuntimeException("Bloom batch write failed for {$key}.");

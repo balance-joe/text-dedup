@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Redis;
 
-use App\Service\MinHash;
+use App\Service\DedupeParameters;
 use Hyperf\Redis\Redis;
 use RuntimeException;
 use Throwable;
@@ -44,7 +44,7 @@ final class MinhashBloomIndex
     /** @param list<string> $values */
     public function addBandValues(Redis $redis, string $generation, string $bucket, string $scope, int $bandIndex, array $values): void
     {
-        if ($bandIndex < 0 || $bandIndex >= MinHash::BANDS) {
+        if ($bandIndex < 0 || $bandIndex >= DedupeParameters::minhashBands()) {
             throw new \InvalidArgumentException("Invalid MinHash band index: {$bandIndex}");
         }
         $values = array_values(array_filter($values, static fn (mixed $value): bool => is_string($value) && preg_match('/\A\d+\z/', $value) === 1));
@@ -54,7 +54,7 @@ final class MinhashBloomIndex
         $key = $this->keys->minhash($generation, $scope, $bucket, $bandIndex);
         $this->ensureFilter($redis, $key, $scope);
         $redis->expireAt($key, $this->buckets->expireAt($bucket));
-        foreach (array_chunk($values, 1000) as $chunk) {
+        foreach (array_chunk($values, DedupeParameters::bloomBatchSize()) as $chunk) {
             $response = $redis->rawCommand('BF.MADD', $key, ...$chunk);
             if (!is_array($response) || count($response) !== count($chunk)) {
                 throw new RuntimeException("MinHash Bloom batch write failed for band {$bandIndex}.");
@@ -107,7 +107,7 @@ final class MinhashBloomIndex
 
     public function reserveBucket(Redis $redis, string $generation, string $bucket, string $scope): void
     {
-        for ($index = 0; $index < MinHash::BANDS; ++$index) {
+        for ($index = 0; $index < DedupeParameters::minhashBands(); ++$index) {
             $key = $this->keys->minhash($generation, $scope, $bucket, $index);
             $this->ensureFilter($redis, $key, $scope);
             $redis->expireAt($key, $this->buckets->expireAt($bucket));
@@ -123,7 +123,7 @@ final class MinhashBloomIndex
                 throw new \InvalidArgumentException('Invalid MinHash band.');
             }
             $index = (int) $band[0];
-            if ($index < 0 || $index >= MinHash::BANDS) {
+            if ($index < 0 || $index >= DedupeParameters::minhashBands()) {
                 throw new \InvalidArgumentException("Invalid MinHash band index: {$index}");
             }
             $result[$index] = [$index, $band[1]];

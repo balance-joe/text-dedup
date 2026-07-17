@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\Redis;
 
+use App\Service\DedupeParameters;
 use App\Support\UInt64;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -44,7 +45,14 @@ final class RedisIndexBuilder
         $this->generations->beginBuild($redis, $generation, [
             'min_date' => $from->format('Ymd'),
             'max_date' => $to->modify('-1 second')->format('Ymd'),
-            'algorithm_version' => 'v1',
+            'algorithm_version' => DedupeParameters::algorithmVersion(),
+            'simhash_bits' => (string) DedupeParameters::simhashBits(),
+            'simhash_bands' => (string) DedupeParameters::simhashBands(),
+            'simhash_ngram' => (string) DedupeParameters::simhashNgram(),
+            'minhash_ngram' => (string) DedupeParameters::minhashNgram(),
+            'minhash_num_perm' => (string) DedupeParameters::minhashNumPerm(),
+            'minhash_bands' => (string) DedupeParameters::minhashBands(),
+            'minhash_rows' => (string) DedupeParameters::minhashRows(),
         ]);
         try {
             $this->exact->reserveGeneration($redis, $generation);
@@ -145,7 +153,7 @@ final class RedisIndexBuilder
     {
         $connection = $this->connection();
         foreach (['content' => 'minhash_band', 'title' => 'title_minhash_band'] as $scope => $parent) {
-            for ($bandIndex = 0; $bandIndex < 32; ++$bandIndex) {
+            for ($bandIndex = 0; $bandIndex < DedupeParameters::minhashBands(); ++$bandIndex) {
                 $table = $this->qualified("{$parent}_p{$bandIndex}");
                 $checkpointKey = $this->keys->checkpoint($generation, "minhash:{$scope}:b{$bandIndex}");
                 $checkpoint = $redis->get($checkpointKey);

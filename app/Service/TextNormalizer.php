@@ -18,7 +18,7 @@ final class TextNormalizer
         if ($text === '') return '';
         $original = mb_strtolower((string) preg_replace('/\\s+/u', '', $text), 'UTF-8');
         $text = (string) preg_replace('/[' . self::EMOJI . ']+/u', '', $text);
-        $text = (string) preg_replace('/\\[[^\\[\\]]{1,20}\\]/u', '', $text);
+        $text = (string) preg_replace('/\\[[^\\[\\]]{1,' . DedupeParameters::bracketTokenMaxLength() . '}\\]/u', '', $text);
         $text = (string) preg_replace('/\\d+/u', '0', $text);
         $text = str_replace('0.0', '0', $text);
         $text = (string) preg_replace('/[^\\x{4E00}-\\x{9FFF}\\x{3000}-\\x{303F}\\x{FF00}-\\x{FFEF}]/u', '', $text);

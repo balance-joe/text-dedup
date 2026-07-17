@@ -96,7 +96,12 @@ final class DedupeService
         if ($exactBloom === false) {
             $prefilterTimings = ['redis_bloom_skipped_pg' => true];
         }
+        $prefilterTimings['redis_attempted'] = !$insertOnCheck;
+        $prefilterTimings['redis_result_available'] = $exactBloom !== null;
         $prefilterTimings['redis_ms'] = round($exactRedisMilliseconds, 3);
+        if ($insertOnCheck) {
+            $prefilterTimings['redis_skip_reason'] = 'insert_on_check';
+        }
         $performance['prefilter'] = round((microtime(true) - $prefilterStartedAt) * 1000, 2);
         $performance['prefilter_details'] = $prefilterTimings;
         if ($prefilter !== null) {
@@ -207,6 +212,7 @@ final class DedupeService
                 ->connection('default');
             $createdAt = new DateTimeImmutable('now', new DateTimeZone((string) config('dedupe.redis_index.timezone', 'Asia/Shanghai')));
             $redisPrewriteMilliseconds = 0.0;
+            $performance['redis_prewrite_attempted'] = true;
             $this->redisIndex->prewrite($documentId, $contentContext, $titleContext, $createdAt, $redisPrewriteMilliseconds);
             $performance['redis_prewrite'] = round($redisPrewriteMilliseconds, 3);
             $writeStartedAt = microtime(true);
@@ -461,7 +467,7 @@ final class DedupeService
                 '(SELECT ?::smallint AS band_index, b.band_value, b.doc_pk, d.external_id, d.source_from, d.%s AS simhash_hi, d.%s AS simhash_lo FROM %s AS b JOIN %s AS d ON d.doc_pk = b.doc_pk WHERE b.band_value = ?::integer%s ORDER BY b.doc_pk LIMIT ?::integer)',
                 $hiColumn,
                 $loColumn,
-                $this->bandLeafTable($bandModel->getTable(), $bandIndex, 7),
+                $this->bandLeafTable($bandModel->getTable(), $bandIndex, DedupeParameters::simhashBands() - 1),
                 $documentTable,
                 $dateWindow === null ? '' : ' AND b.created_at >= ?::timestamptz AND b.created_at < ?::timestamptz',
             );
@@ -609,7 +615,7 @@ final class DedupeService
             $match['content_hash'] = $document['content_hash'];
             $match['title_hash'] = $document['title_hash'];
             $sampleText = $context->scope === 'title' ? $document['normalized_title'] : $document['normalized_content'];
-            $match['sample_text'] = mb_substr($sampleText, 0, 160, 'UTF-8');
+            $match['sample_text'] = mb_substr($sampleText, 0, DedupeParameters::sampleTextLength(), 'UTF-8');
             $hydratedMatches[] = $match;
         }
         $matches = array_slice($hydratedMatches, 0, $limit);
@@ -651,7 +657,7 @@ final class DedupeService
             throw new InvalidArgumentException("Unsupported fingerprint scope: {$scope}");
         }
 
-        $maxCandidatesPerBand ??= (int) config('dedupe.simhash.max_bucket_size', 1000) + 1;
+        $maxCandidatesPerBand ??= (int) config('dedupe.minhash.max_bucket_size', 1000) + 1;
         $normalizedBands = $this->normalizeMinhashBands($bands);
         $result = [];
         foreach ($normalizedBands as [$bandIndex, $bandValue]) {
@@ -689,7 +695,7 @@ final class DedupeService
         foreach ($normalizedBands as [$bandIndex, $bandValue]) {
             $subqueries[] = sprintf(
                 '(SELECT ?::smallint AS band_index, b.band_value, b.doc_pk FROM %s AS b WHERE b.band_value = ?::bigint%s ORDER BY b.doc_pk LIMIT ?::integer)',
-                $this->bandLeafTable($bandModel->getTable(), $bandIndex, 31),
+                $this->bandLeafTable($bandModel->getTable(), $bandIndex, DedupeParameters::minhashBands() - 1),
                 $dateWindow === null ? '' : ' AND b.created_at >= ?::timestamptz AND b.created_at < ?::timestamptz',
             );
             array_push($bindings, $bandIndex, $bandValue);
@@ -715,17 +721,20 @@ final class DedupeService
     }
 
     /**
-     * 在 MinHash LSH 候选中进行完整 5-gram Jaccard 复核。
+     * 在 MinHash LSH 候选中按当前配置的 n-gram 执行完整 Jaccard 复核。
      *
      * @return array{matches: list<array{id: string, doc_pk: int, method: string, matched_scope: string, score: float, sample_text: string}>, best_score: float, best_match_id: ?string, skipped_buckets: list<array<string, int|string>>, stats: array<string, int|float>}
      */
     public function matchMinhash(FingerprintContext $context, ?string $documentId = null, ?int $maxBucketSize = null, ?int $limit = null): array
     {
         $maxBucketSize = min(
-            $maxBucketSize ?? (int) config('dedupe.simhash.max_bucket_size', 1000),
-            (int) config('dedupe.simhash.lsh_max_bucket_size', 2000),
+            $maxBucketSize ?? (int) config('dedupe.minhash.max_bucket_size', 1000),
+            (int) config('dedupe.minhash.lsh_max_bucket_size', 2000),
         );
-        $maxCandidates = (int) config('dedupe.minhash.max_candidates', 50);
+        $maxCandidates = min(
+            (int) config('dedupe.minhash.max_candidates', 50),
+            (int) config('dedupe.minhash.api_max_checks', 200),
+        );
         $limit ??= (int) config('dedupe.result_limit', 20);
         $threshold = (float) config('dedupe.minhash.jaccard_threshold', 0.4);
         if ($maxBucketSize < 1 || $maxCandidates < 1 || $limit < 1 || $threshold < 0 || $threshold > 1) {
@@ -771,7 +780,7 @@ final class DedupeService
         $useNativeJaccard = function_exists('dedupe_jaccard_ngram_many');
         $leftGrams = $useNativeJaccard
             ? []
-            : array_fill_keys(Ngram::items($context->text, MinHash::NGRAM), true);
+            : array_fill_keys(Ngram::items($context->text, DedupeParameters::minhashNgram()), true);
         $matches = [];
         $bestScore = 0.0;
         $bestMatchId = null;
@@ -786,14 +795,14 @@ final class DedupeService
             $comparisons[] = ['document' => $document, 'text' => $text];
         }
         $scores = $useNativeJaccard
-            ? dedupe_jaccard_ngram_many($context->text, array_column($comparisons, 'text'), MinHash::NGRAM)
+            ? dedupe_jaccard_ngram_many($context->text, array_column($comparisons, 'text'), DedupeParameters::minhashNgram())
             : [];
         foreach ($comparisons as $index => $comparison) {
             $document = $comparison['document'];
             $text = $comparison['text'];
             $score = $useNativeJaccard
                 ? $scores[$index]
-                : $this->jaccard($leftGrams, array_fill_keys(Ngram::items($text, MinHash::NGRAM), true));
+                : $this->jaccard($leftGrams, array_fill_keys(Ngram::items($text, DedupeParameters::minhashNgram()), true));
             if ($score > $bestScore) {
                 $bestScore = $score;
                 $bestMatchId = $document['external_id'];
@@ -805,7 +814,7 @@ final class DedupeService
                     'method' => 'minhash',
                     'matched_scope' => $context->scope,
                     'score' => $score,
-                    'sample_text' => mb_substr($text, 0, 160, 'UTF-8'),
+                    'sample_text' => mb_substr($text, 0, DedupeParameters::sampleTextLength(), 'UTF-8'),
                     'raw_hash' => $document['raw_hash'],
                     'content_hash' => $document['content_hash'],
                     'title_hash' => $document['title_hash'],
@@ -825,6 +834,8 @@ final class DedupeService
                 'bucket_pool_acquire_ms' => $bucketTimings['pool_acquire_ms'],
                 'bucket_sql_ms' => $bucketTimings['sql_ms'],
                 'bucket_result_mapping_ms' => $bucketTimings['result_mapping_ms'],
+                'redis_ms' => (float) ($bucketTimings['redis_ms'] ?? 0.0),
+                'redis_bloom_skipped_pg' => (bool) ($bucketTimings['redis_bloom_skipped_pg'] ?? false),
                 'candidate_rows' => $candidateRows,
                 'candidate_unique_docs' => count($candidateIds),
                 'docs_fetch_ms' => round($fetchMilliseconds, 3),
@@ -939,8 +950,8 @@ final class DedupeService
                 throw new InvalidArgumentException('SimHash band hexadecimal values must contain 1 to 4 hexadecimal characters.');
             }
             $bandValue = is_string($band[1]) ? hexdec($band[1]) : (int) $band[1];
-            if ($bandIndex < 0 || $bandIndex > 7 || $bandValue < 0 || $bandValue > 0xffff) {
-                throw new InvalidArgumentException('SimHash bands must use indexes 0-7 and unsigned 16-bit values.');
+            if ($bandIndex < 0 || $bandIndex >= DedupeParameters::simhashBands() || $bandValue < 0 || $bandValue > 0xffff) {
+                throw new InvalidArgumentException('Invalid SimHash band index or unsigned 16-bit value.');
             }
             $key = $this->bandKey($bandIndex, $bandValue);
             $result[$key] = [$bandIndex, $bandValue];
@@ -958,8 +969,8 @@ final class DedupeService
                 throw new InvalidArgumentException('Each MinHash band must contain an index and uint64 decimal string.');
             }
             $bandIndex = (int) $band[0];
-            if ($bandIndex < 0 || $bandIndex > 31) {
-                throw new InvalidArgumentException('MinHash band indexes must be in the range 0-31.');
+            if ($bandIndex < 0 || $bandIndex >= DedupeParameters::minhashBands()) {
+                throw new InvalidArgumentException('Invalid MinHash band index.');
             }
             $signedValue = UInt64::toSignedInt64(UInt64::fromDecimal($band[1]));
             $key = $this->bandKey($bandIndex, $signedValue);
@@ -1069,8 +1080,9 @@ final class DedupeService
 
     private function hammingDistance(string $left, string $right): int
     {
-        if (strlen($left) !== SimHash::BITS / 8 || strlen($right) !== SimHash::BITS / 8) {
-            throw new InvalidArgumentException('SimHash values must contain exactly 16 bytes.');
+        $bytes = intdiv(DedupeParameters::simhashBits(), 8);
+        if (strlen($left) !== $bytes || strlen($right) !== $bytes) {
+            throw new InvalidArgumentException("SimHash values must contain exactly {$bytes} bytes.");
         }
 
         static $bitCount = null;
@@ -1125,6 +1137,7 @@ final class DedupeService
             'prefilter' => 0.0,
             'prefilter_details' => [],
             'redis_prewrite' => 0.0,
+            'redis_prewrite_attempted' => false,
             'content_pipeline' => [
                 'simhash' => 0.0,
                 'minhash' => 0.0,

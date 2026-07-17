@@ -11,6 +11,7 @@ $databaseSchemas = array_values(array_filter(array_map('trim', explode(',', env(
  * 数据库连接仍由 config/autoload/databases.php 中的 DB_* 参数负责。
  */
 return [
+    'algorithm_version' => (string) env('DEDUPE_ALGORITHM_VERSION', 'v1'),
     'database' => [
         // 与 Model 使用同一个 DB_SCHEMA 来源，避免原生叶分区 SQL 和 ORM
         // 因两套环境变量而访问不同 schema。
@@ -18,6 +19,13 @@ return [
     ],
     'levels' => array_values(array_filter(array_map('trim', explode(',', env('DEDUPE_LEVELS', 'content_hash,simhash,minhash'))))),
     'result_limit' => max(1, (int) env('DEDUPE_RESULT_LIMIT', 20)),
+    'sample_text_length' => max(0, (int) env('DEDUPE_SAMPLE_TEXT_LENGTH', 160)),
+    'low_information' => [
+        'min_length' => max(0, (int) env('DEDUPE_LOW_INFORMATION_MIN_LENGTH', 30)),
+        'min_alphanumeric' => max(0, (int) env('DEDUPE_LOW_INFORMATION_MIN_ALPHANUMERIC', 10)),
+        'token_ratio' => min(1.0, max(0.0, (float) env('DEDUPE_LOW_INFORMATION_TOKEN_RATIO', 0.65))),
+        'bracket_token_max_length' => max(1, (int) env('DEDUPE_BRACKET_TOKEN_MAX_LENGTH', 20)),
+    ],
     'simhash' => [
         'bits' => (int) env('DEDUPE_BITS', 128),
         'bands' => (int) env('DEDUPE_BANDS', 8),
@@ -34,6 +42,8 @@ return [
         'rows' => (int) env('DEDUPE_MINHASH_ROWS', 1),
         'jaccard_threshold' => (float) env('DEDUPE_MINHASH_JACCARD_THRESHOLD', 0.4),
         'max_candidates' => max(1, (int) env('DEDUPE_MINHASH_MAX_CANDIDATES', 50)),
+        'max_bucket_size' => max(1, (int) env('DEDUPE_MINHASH_MAX_BUCKET_SIZE', env('DEDUPE_MAX_BUCKET_SIZE', 1000))),
+        'lsh_max_bucket_size' => max(1, (int) env('DEDUPE_MINHASH_LSH_MAX_BUCKET_SIZE', env('DEDUPE_LSH_MAX_BUCKET_SIZE', 2000))),
         'api_max_checks' => max(1, (int) env('DEDUPE_API_MAX_MINHASH_CHECKS', 200)),
     ],
     'redis_index' => [
@@ -47,6 +57,7 @@ return [
         // add-column 完成后先开启写入；全量回填和索引验收后再开启 date_filter_enabled。
         'band_created_at_write_enabled' => in_array(strtolower((string) env('DEDUPE_BAND_CREATED_AT_WRITE_ENABLED', '0')), ['1', 'true', 'yes', 'on'], true),
         'expansion' => max(1, (int) env('DEDUPE_BLOOM_EXPANSION', 2)),
+        'write_batch_size' => max(1, (int) env('DEDUPE_BLOOM_WRITE_BATCH_SIZE', 1000)),
         'exact' => [
             'enabled' => in_array(strtolower((string) env('DEDUPE_EXACT_BLOOM_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true),
             'error_rate' => max(0.000001, (float) env('DEDUPE_EXACT_BLOOM_ERROR_RATE', '0.0001')),

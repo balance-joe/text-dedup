@@ -54,9 +54,12 @@ final class FingerprintContext
         // 正文作用域在正文为空时回退到标题；标题作用域永远只使用标题。
         $text = $scope === 'content' ? ($normalizedContent ?: $normalizedTitle) : $normalizedTitle;
         $exactHash = $scope === 'content' ? ($contentHash ?: $titleHash) : $titleHash;
-        $grams = Ngram::items($text, 5);
-        $simhashValue = SimHash::value($text, SimHash::NGRAM, $grams);
-        $minhashSignature = MinHash::signature($text, $grams);
+        $simhashNgram = DedupeParameters::simhashNgram();
+        $minhashNgram = DedupeParameters::minhashNgram();
+        $simhashGrams = Ngram::items($text, $simhashNgram);
+        $minhashGrams = $minhashNgram === $simhashNgram ? $simhashGrams : Ngram::items($text, $minhashNgram);
+        $simhashValue = SimHash::value($text, $simhashNgram, $simhashGrams);
+        $minhashSignature = MinHash::signature($text, $minhashGrams);
 
         return new self(
             source: $source,
@@ -87,14 +90,14 @@ final class FingerprintContext
             return true;
         }
 
-        preg_match_all('/\[[^\[\]]{1,20}\]/u', $text, $tokenMatches);
+        preg_match_all('/\[[^\[\]]{1,' . DedupeParameters::bracketTokenMaxLength() . '}\]/u', $text, $tokenMatches);
         $tokenChars = array_sum(array_map(static fn (string $token): int => mb_strlen($token, 'UTF-8'), $tokenMatches[0]));
         preg_match_all('/[\p{L}\p{N}]/u', $text, $alphanumericMatches);
         $chineseOrAlphanumeric = count($alphanumericMatches[0]);
         $length = mb_strlen($text, 'UTF-8');
 
-        return $length < 30
-            || ($tokenMatches[0] !== [] && $tokenChars / max($length, 1) >= 0.65)
-            || $chineseOrAlphanumeric < 10;
+        return $length < DedupeParameters::lowInformationMinLength()
+            || ($tokenMatches[0] !== [] && $tokenChars / max($length, 1) >= DedupeParameters::lowInformationTokenRatio())
+            || $chineseOrAlphanumeric < DedupeParameters::lowInformationMinAlphanumeric();
     }
 }
