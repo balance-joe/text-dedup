@@ -26,18 +26,48 @@ final class MinhashBloomIndex
     public function addBands(Redis $redis, string $generation, string $bucket, string $scope, array $bands): void
     {
         $normalized = $this->normalizeBands($bands);
-        foreach ($normalized as [$index, $_]) {
-            $key = $this->keys->minhash($generation, $scope, $bucket, $index);
-            $this->ensureFilter($redis, $key, $scope);
-            $redis->expireAt($key, $this->buckets->expireAt($bucket));
+        if ($normalized === []) {
+            return;
         }
-        $responses = $redis->pipeline(function (\Redis $pipeline) use ($normalized, $generation, $scope, $bucket): void {
-            foreach ($normalized as [$index, $value]) {
-                $pipeline->rawCommand('BF.ADD', $this->keys->minhash($generation, $scope, $bucket, $index), $value);
-            }
-        });
+
+        $keys = [];
+        $values = [];
+        foreach ($normalized as [$index, $value]) {
+            $key = $this->keys->minhash($generation, $scope, $bucket, $index);
+            $keys[] = $key;
+            $values[] = $value;
+            $this->knownKeys[$key] = true;
+        }
+
+        $capacity = max(1, (int) config("dedupe.redis_index.minhash.{$scope}_daily_capacity", 1300000));
+        $errorRate = (string) config('dedupe.redis_index.minhash.error_rate', 0.00001);
+        $expansion = max(1, (int) config('dedupe.redis_index.expansion', 2));
+        $expireAt = $this->buckets->expireAt($bucket);
+        $arguments = array_merge($keys, [$errorRate, (string) $capacity, (string) $expansion, (string) $expireAt], $values);
+
+        // 单次 EVAL 在 Redis 内部完成32个band的懒创建、TTL校验和写入，避免
+        // 每篇文档产生32次 BF.RESERVE + 32次 EXPIREAT 的网络往返。
+        $responses = $redis->eval(<<<'LUA'
+local error_rate = ARGV[1]
+local capacity = ARGV[2]
+local expansion = ARGV[3]
+local expire_at = tonumber(ARGV[4])
+local results = {}
+
+for index, key in ipairs(KEYS) do
+    if redis.call('EXISTS', key) == 0 then
+        redis.call('BF.RESERVE', key, error_rate, capacity, 'EXPANSION', expansion)
+    end
+    if redis.call('TTL', key) < 0 then
+        redis.call('EXPIREAT', key, expire_at)
+    end
+    results[index] = redis.call('BF.ADD', key, ARGV[index + 4])
+end
+
+return results
+LUA, $arguments, count($keys));
         if (!is_array($responses) || count($responses) !== count($normalized) || in_array(false, $responses, true)) {
-            throw new RuntimeException('MinHash Bloom pipeline failed.');
+            throw new RuntimeException('MinHash Bloom atomic batch write failed.');
         }
     }
 
