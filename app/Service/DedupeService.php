@@ -212,9 +212,16 @@ final class DedupeService
                 ->connection('default');
             $createdAt = new DateTimeImmutable('now', new DateTimeZone((string) config('dedupe.redis_index.timezone', 'Asia/Shanghai')));
             $redisPrewriteMilliseconds = 0.0;
-            $performance['redis_prewrite_attempted'] = true;
-            $this->redisIndex->prewrite($documentId, $contentContext, $titleContext, $createdAt, $redisPrewriteMilliseconds);
+            $redisPrewrite = $this->redisIndex->prewrite($documentId, $contentContext, $titleContext, $createdAt, $redisPrewriteMilliseconds);
             $performance['redis_prewrite'] = round($redisPrewriteMilliseconds, 3);
+            $performance['redis_prewrite_attempted'] = $redisPrewrite->attempted;
+            $performance['redis_prewrite_succeeded'] = $redisPrewrite->succeeded;
+            $performance['redis_prewrite_status'] = !$redisPrewrite->attempted
+                ? 'skipped'
+                : ($redisPrewrite->succeeded ? 'success' : 'degraded');
+            $performance['redis_prewrite_generations'] = $redisPrewrite->generations;
+            $performance['redis_prewrite_error'] = $redisPrewrite->error;
+            $performance['redis_prewrite_bucket'] = 'd' . $createdAt->format('Ymd');
             $writeStartedAt = microtime(true);
             $write = $connection->transaction(
                 fn (): array => $this->insertNewDocument($connection, $documentId, $contentContext, $titleContext, $createdAt),
@@ -1143,6 +1150,11 @@ final class DedupeService
             'prefilter_details' => [],
             'redis_prewrite' => 0.0,
             'redis_prewrite_attempted' => false,
+            'redis_prewrite_succeeded' => false,
+            'redis_prewrite_status' => 'not_reached',
+            'redis_prewrite_generations' => [],
+            'redis_prewrite_error' => null,
+            'redis_prewrite_bucket' => null,
             'content_pipeline' => [
                 'simhash' => 0.0,
                 'minhash' => 0.0,
