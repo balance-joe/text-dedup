@@ -41,7 +41,7 @@ return [
         'bands' => (int) env('DEDUPE_MINHASH_BANDS', 32),
         'rows' => (int) env('DEDUPE_MINHASH_ROWS', 1),
         'jaccard_threshold' => (float) env('DEDUPE_MINHASH_JACCARD_THRESHOLD', 0.4),
-        'max_candidates' => max(1, (int) env('DEDUPE_MINHASH_MAX_CANDIDATES', 50)),
+        'max_candidates' => max(1, (int) env('DEDUPE_MINHASH_MAX_CANDIDATES', 20)),
         'max_bucket_size' => max(1, (int) env('DEDUPE_MINHASH_MAX_BUCKET_SIZE', env('DEDUPE_MAX_BUCKET_SIZE', 1000))),
         'lsh_max_bucket_size' => max(1, (int) env('DEDUPE_MINHASH_LSH_MAX_BUCKET_SIZE', env('DEDUPE_LSH_MAX_BUCKET_SIZE', 2000))),
         'api_max_checks' => max(1, (int) env('DEDUPE_API_MAX_MINHASH_CHECKS', 200)),

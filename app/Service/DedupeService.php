@@ -745,8 +745,7 @@ final class DedupeService
         $bucketTimings = [];
         $candidateMap = $this->findMinhashCandidateIdsForBands($context->minhashBands, $context->scope, $maxBucketSize + 1, $bucketTimings);
         $queryMilliseconds = (microtime(true) - $startedAt) * 1000;
-        $candidateIds = [];
-        $seen = [];
+        $eligibleBandRows = [];
         $skippedBuckets = [];
         $candidateRows = 0;
         $largestBucket = 0;
@@ -759,18 +758,20 @@ final class DedupeService
                 $skippedBuckets[] = ['band_index' => $bandIndex, 'band_value' => UInt64::toDecimal(UInt64::fromSignedInt64($bandValue)), 'doc_count' => $rowCount];
                 continue;
             }
-            foreach ($rows as $docPk) {
-                if (!isset($seen[$docPk])) {
-                    $seen[$docPk] = true;
-                    $candidateIds[] = $docPk;
-                }
-                if (count($candidateIds) >= $maxCandidates) {
-                    break 2;
-                }
-            }
+            $eligibleBandRows[] = $rows;
         }
-        if (count($candidateIds) >= $maxCandidates) {
-            $skippedBuckets[] = ['level' => 'minhash', 'reason' => 'candidate limit reached', 'max_candidates' => $maxCandidates];
+
+        $rankingStartedAt = microtime(true);
+        $rankedCandidates = MinhashCandidateRanker::top($eligibleBandRows, $maxCandidates);
+        $candidateIds = $rankedCandidates['ids'];
+        $rankingMilliseconds = (microtime(true) - $rankingStartedAt) * 1000;
+        if ($rankedCandidates['truncated']) {
+            $skippedBuckets[] = [
+                'level' => 'minhash',
+                'reason' => 'candidate limit reached after band-hit ranking',
+                'max_candidates' => $maxCandidates,
+                'unique_before_limit' => $rankedCandidates['unique_before_limit'],
+            ];
         }
 
         $fetchStartedAt = microtime(true);
@@ -838,6 +839,10 @@ final class DedupeService
                 'redis_bloom_skipped_pg' => (bool) ($bucketTimings['redis_bloom_skipped_pg'] ?? false),
                 'candidate_rows' => $candidateRows,
                 'candidate_unique_docs' => count($candidateIds),
+                'candidate_unique_docs_before_limit' => $rankedCandidates['unique_before_limit'],
+                'candidate_limit' => $maxCandidates,
+                'candidate_top_band_hits' => $rankedCandidates['top_band_hits'],
+                'candidate_ranking_ms' => round($rankingMilliseconds, 3),
                 'docs_fetch_ms' => round($fetchMilliseconds, 3),
                 'docs_pool_acquire_ms' => $documentTimings['pool_acquire_ms'],
                 'docs_sql_ms' => $documentTimings['sql_ms'],
