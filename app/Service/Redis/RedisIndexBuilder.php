@@ -25,6 +25,7 @@ final class RedisIndexBuilder
         private readonly RedisKeyFactory $keys,
         private readonly RedisDateBucketResolver $buckets,
         private readonly ExactHashBloomIndex $exact,
+        private readonly SimhashCandidateIndex $simhash,
         private readonly MinhashBloomIndex $minhash,
     ) {
     }
@@ -49,6 +50,7 @@ final class RedisIndexBuilder
             'simhash_bits' => (string) DedupeParameters::simhashBits(),
             'simhash_bands' => (string) DedupeParameters::simhashBands(),
             'simhash_ngram' => (string) DedupeParameters::simhashNgram(),
+            'simhash_redis_index' => (bool) config('dedupe.redis_index.simhash.enabled', true) ? 'zset_v1' : 'disabled',
             'minhash_ngram' => (string) DedupeParameters::minhashNgram(),
             'minhash_num_perm' => (string) DedupeParameters::minhashNumPerm(),
             'minhash_bands' => (string) DedupeParameters::minhashBands(),
@@ -63,6 +65,9 @@ final class RedisIndexBuilder
                 $progress?->__invoke("reserved {$bucket}");
             }
             $this->buildExact($redis, $generation, $batchSize, $progress);
+            if ((bool) config('dedupe.redis_index.simhash.enabled', true)) {
+                $this->buildSimhash($redis, $generation, $from, $to, $batchSize, $progress);
+            }
             $this->buildMinhash($redis, $generation, $from, $to, $batchSize, $progress);
             $this->generations->markReady($redis, $generation);
         } catch (\Throwable $exception) {
@@ -147,6 +152,68 @@ final class RedisIndexBuilder
             $progress?->__invoke("exact doc_pk={$lastDocPk}");
         } while (count($rows) === $batchSize);
         $redis->del($checkpointKey);
+    }
+
+    private function buildSimhash(Redis $redis, string $generation, DateTimeImmutable $from, DateTimeImmutable $to, int $batchSize, ?callable $progress): void
+    {
+        $connection = $this->connection();
+        $fingerprintTable = $this->qualified('document_fingerprint');
+        foreach (['content' => 'simhash_band', 'title' => 'title_simhash_band'] as $scope => $parent) {
+            for ($bandIndex = 0; $bandIndex < DedupeParameters::simhashBands(); ++$bandIndex) {
+                $table = $this->qualified("{$parent}_p{$bandIndex}");
+                $checkpointKey = $this->keys->checkpoint($generation, "simhash:{$scope}:b{$bandIndex}");
+                $checkpoint = $redis->get($checkpointKey);
+                $decoded = is_string($checkpoint) ? json_decode($checkpoint, true) : null;
+                $last = is_array($decoded)
+                    && isset($decoded['band_value'], $decoded['created_at'], $decoded['doc_pk'])
+                    ? $decoded
+                    : null;
+                do {
+                    $bindings = [$from->format('Y-m-d H:i:sP'), $to->format('Y-m-d H:i:sP')];
+                    $after = '';
+                    if ($last !== null) {
+                        $after = ' AND (b.band_value, b.created_at, b.doc_pk) > (?::integer, ?::timestamptz, ?::bigint)';
+                        array_push($bindings, $last['band_value'], $last['created_at'], $last['doc_pk']);
+                    }
+                    $bindings[] = max(1, $batchSize);
+                    $rows = $connection->select(
+                        "SELECT b.band_value, b.created_at, b.doc_pk, d.external_id
+                         FROM {$table} AS b
+                         JOIN {$fingerprintTable} AS d ON d.doc_pk = b.doc_pk
+                         WHERE b.created_at >= ?::timestamptz AND b.created_at < ?::timestamptz{$after}
+                         ORDER BY b.band_value, b.created_at, b.doc_pk
+                         LIMIT ?",
+                        $bindings,
+                    );
+                    if ($rows === []) {
+                        break;
+                    }
+                    $grouped = [];
+                    foreach ($rows as $row) {
+                        $createdAt = new DateTimeImmutable((string) $row->created_at);
+                        $bucket = $this->buckets->writeBucket($createdAt);
+                        $bandValue = (int) $row->band_value;
+                        $grouped[$bucket][$bandValue][(string) $row->external_id] = (float) $createdAt->format('U.u');
+                        $last = [
+                            'band_value' => $bandValue,
+                            'created_at' => $createdAt->format('Y-m-d H:i:s.uP'),
+                            'doc_pk' => (int) $row->doc_pk,
+                        ];
+                    }
+                    foreach ($grouped as $bucket => $bandGroups) {
+                        $this->simhash->addBandGroups($redis, $generation, $bucket, $scope, $bandIndex, $bandGroups);
+                    }
+                    $redis->set($checkpointKey, json_encode($last, JSON_THROW_ON_ERROR));
+                    $redis->hIncrBy(
+                        $this->keys->generationMeta($generation),
+                        "{$scope}_simhash_rows_processed",
+                        count($rows),
+                    );
+                    $progress?->__invoke("{$scope} simhash band={$bandIndex} doc_pk={$last['doc_pk']}");
+                } while (count($rows) === $batchSize);
+                $redis->del($checkpointKey);
+            }
+        }
     }
 
     private function buildMinhash(Redis $redis, string $generation, DateTimeImmutable $from, DateTimeImmutable $to, int $batchSize, ?callable $progress): void

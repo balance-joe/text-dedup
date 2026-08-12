@@ -64,6 +64,9 @@ return [
             'capacity' => max(1, (int) env('DEDUPE_EXACT_BLOOM_CAPACITY', 10000000)),
             'external_id_capacity' => max(1, (int) env('DEDUPE_EXACT_BLOOM_EXTERNAL_ID_CAPACITY', 10000000)),
         ],
+        'simhash' => [
+            'enabled' => in_array(strtolower((string) env('DEDUPE_SIMHASH_REDIS_ENABLED', '0')), ['1', 'true', 'yes', 'on'], true),
+        ],
         'minhash' => [
             'enabled' => in_array(strtolower((string) env('DEDUPE_MINHASH_BLOOM_ENABLED', '1')), ['1', 'true', 'yes', 'on'], true),
             'error_rate' => max(0.000001, (float) env('DEDUPE_MINHASH_BLOOM_ERROR_RATE', '0.00001')),

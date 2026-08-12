@@ -7,7 +7,7 @@
 1. PostgreSQL 是去重数据的唯一事实来源；Redis 是可以重建、可以降级的在线索引。
 2. Redis 不作为数据湖，不保存原始文章、长期历史或离线训练数据。
 3. `generation` 是整套 Redis 索引的版本号；日期桶是同一版本内部的时间分片，两者是正交维度。
-4. 精确 Hash 使用 RedisBloom，SimHash 使用 ZSet 候选桶，MinHash 使用 RedisBloom 过滤 PostgreSQL 叶分区。
+4. 精确 Hash 使用 RedisBloom，SimHash 使用按日 ZSet 候选桶，MinHash 使用按日 Bloom 过滤 PostgreSQL 叶分区。
 5. Exact Bloom 按 generation 全局维护，以保持当前 PostgreSQL 全表精确预过滤和全局唯一约束语义；SimHash/MinHash 按天分桶。
 6. Redis 的任何命中都不是最终判定：精确 Hash 由 PostgreSQL 确认，SimHash 计算真实 Hamming distance，MinHash 计算真实 5-gram Jaccard。
 
@@ -18,7 +18,7 @@ Redis 适合低延迟查询，但不适合承担数据湖职责：
 - 内存成本高，不适合长期保存原始正文；
 - Key 会按保留期淘汰，索引也允许重建；
 - Bloom Filter 只表达“可能存在”，不能恢复原始数据；
-- SimHash 候选桶只保存文档标识，不能替代完整指纹与正文；
+- SimHash ZSet 只保存候选 external_id，不能替代完整指纹与正文；
 - Redis 故障时服务必须能够回退 PostgreSQL。
 
 本项目中的存储分工为：
@@ -26,7 +26,7 @@ Redis 适合低延迟查询，但不适合承担数据湖职责：
 | 存储 | 职责 |
 |---|---|
 | PostgreSQL | 在线事实数据：文档、文本、完整指纹、LSH band 与最终查询依据 |
-| Redis | 可重建的低延迟索引：精确 Hash Bloom、SimHash 候选桶、MinHash Bloom |
+| Redis | 可重建的低延迟索引：精确 Hash Bloom、SimHash ZSet、MinHash Bloom |
 | 对象存储/数据湖（如未来接入 MinIO/S3） | 长期原始数据、历史快照、离线分析和跨版本重建输入 |
 
 当前 PHP 服务不需要为了使用 Redis 而新增数据湖。只有当 PostgreSQL 的保留期短于业务要求、但又需要从更久历史重建索引时，才需要额外的对象存储。
@@ -129,7 +129,7 @@ dedupe:g000002:exact:title_hash
 |---|---|---|
 | `document_fingerprint.external_id` 唯一约束 | generation 级 External ID Bloom | 全局幂等，`external_id` 不可变 |
 | `raw_hash`、`content_hash`、`title_hash` | generation 级全局 Exact Bloom | Bloom True 后仍由 PostgreSQL精确确认 |
-| `simhash_band` 8 个分区与 `simhash_hi/lo` | 8 个按天 ZSet 候选桶 | Redis 只召回，Hamming 最终确认 |
+| `simhash_band` 8 个分区与 `simhash_hi/lo` | 按天、band value 分桶的 ZSet | Redis 召回 external_id，PG读取完整SimHash后确认 |
 | `minhash_band` 32 个分区 | 32 个按天 Bloom | Bloom 只排除空 band，Jaccard 最终确认 |
 
 标题 scope 使用对应的 `title_simhash_band`、`title_minhash_band` 与标题指纹字段。band 数量、指纹算法参数和 Redis Key 的算法版本必须随 generation 一起记录，禁止只改一侧。
@@ -177,37 +177,21 @@ external:{external_id}
 128 位 SimHash 当前拆成 8 个 16 位 band：
 
 ```text
-dedupe:g000002:simhash:content:d20260716:b0:7fa2
-dedupe:g000002:simhash:content:d20260716:b1:01bc
-dedupe:g000002:simhash:title:d20260716:b0:7fa2
+dedupe:g000002:simhash:content:d20260716:b0:v32674
+dedupe:g000002:simhash:content:d20260716:b1:v444
+dedupe:g000002:simhash:title:d20260716:b0:v32674
 ```
-
-推荐使用 ZSet：
-
-```text
-member = external_id
-score  = 写入时间的毫秒时间戳
-```
-
-当前 PostgreSQL 使用自增 `doc_pk`，在 Redis 预写阶段还不可用，因此第一版用稳定的 `external_id` 作为 member。候选召回后，通过 PostgreSQL 按 `external_id` 批量读取完整 SimHash 与文档字段。
-
-`external_id` 在 `/dedupe/check` 写入合同中必须是不可变且全局唯一的身份键。同一 `external_id` 携带不同内容再次进入时，应按现有精确冲突语义返回已存在，而不是原地更新。未来若增加更新接口，必须显式删除旧 SimHash band 成员并写入新 band；Bloom 中无法删除的旧项可以保留为安全假阳性。不能把“同一 ID 更新内容”静默混入新增链路。
 
 查询步骤：
 
-1. 使用 Pipeline 一次发送查询窗口内所有日期桶的 `ZCARD`，避免按“日期 × 8 个 band”逐条产生网络往返；
-2. 跳过超过热桶阈值的 Key，再用第二个 Pipeline 对剩余 Key 执行带 LIMIT 的 `ZREVRANGE`；
-3. 合并并按 `external_id` 去重；
-4. 应用总候选数和单桶上限；
-5. PostgreSQL批量读取候选的 128 位 SimHash；
-6. 计算真实 Hamming distance；
-7. 达到阈值后才返回匹配。
+1. 新文档按8个band将`external_id`写入对应ZSet，score为写入时间；
+2. Pipeline读取查询窗口内所有日期桶与请求band value对应的最新候选；
+3. 合并、去重并应用现有单band候选上限；
+4. 候选为空时完全跳过PostgreSQL SimHash bucket SQL；
+5. 有候选时按`external_id`批量从PostgreSQL读取完整128位SimHash；
+6. PHP计算真实Hamming distance，达到阈值后才返回匹配。
 
-Pipeline 的目标是把多条命令压缩为一次或少数几次 RTT；Redis 服务端仍然顺序执行命令，不能把它描述为真正的并行执行。若未来验证单连接 Pipeline 仍然成为瓶颈，可以使用 Hyperf 协程配合多个 Redis 连接并发拉取，但必须限制每请求占用的连接数。
-
-每个日期桶只取有限候选，例如每 Key 最多 200 条，再在 PHP 中合并去重并取全局 Top N。按“最新”截断会降低旧候选召回，因此结果中必须记录截断和跳桶信息，阈值属于可观测的算法合同。
-
-热点桶保护是正确性合同的一部分。默认建议 `ZCARD > 5000` 时跳过该 Key，依靠其他 7 个 band 召回，并记录 `scope`、日期、band、band value 和桶大小。跳过热桶会牺牲极端模板文本的部分召回率，不能宣称结果与无限候选算法完全等价；该权衡用于保护 P99 延迟，阈值必须可配置并通过线上指标调整。ZSet 的范围查询不会仅因为 score 相同就必然遍历全部成员，但超大桶仍会带来内存、网络和候选偏置风险，因此硬限制仍有必要。
+旧generation没有`simhash_redis_index=zset_v1`元数据时必须完整回退PostgreSQL。Redis异常同样回退PG；只有新generation构建完成并激活后才能把空ZSet视为无候选。
 
 ### 4.3 MinHash Bloom
 
@@ -278,8 +262,8 @@ CREATE INDEX CONCURRENTLY minhash_band_p0_value_created_doc_idx
      -> 可能存在：PostgreSQL精确确认
      -> 全部不存在：继续
   -> 计算 SimHash
-  -> Redis ZSet 召回最近 N 天候选
-  -> PostgreSQL读取完整 SimHash
+  -> Redis ZSet 召回 external_id 候选
+  -> PostgreSQL按 external_id 批量读取完整 SimHash
   -> Hamming distance 精算
      -> 命中：返回
      -> 未命中：继续
@@ -522,10 +506,6 @@ DEDUPE_EXACT_BLOOM_CAPACITY=10000000
 DEDUPE_EXACT_BLOOM_EXTERNAL_ID_CAPACITY=10000000
 
 DEDUPE_SIMHASH_REDIS_ENABLED=0
-DEDUPE_SIMHASH_RETENTION_DAYS=3
-DEDUPE_SIMHASH_BUCKET_LIMIT=1000
-DEDUPE_SIMHASH_TOTAL_CANDIDATES=200
-DEDUPE_SIMHASH_HOT_BUCKET_SIZE=5000
 
 DEDUPE_MINHASH_BLOOM_ENABLED=0
 DEDUPE_MINHASH_BLOOM_ERROR_RATE=0.00001
@@ -563,7 +543,7 @@ DEDUPE_MINHASH_BLOOM_DAILY_CAPACITY=1300000
 5. 实现统一 Redis 预写、generation 级 All-or-Nothing 降级，再调整 PostgreSQL事务顺序。
 6. 实现两个薄 CLI 入口：`dedupe:band-schema` 管理数据库迁移阶段，`dedupe:redis-index` 管理 generation 的回填、校验、切换和清理。
 7. 先启用 Exact 与 MinHash，验证结果与纯 PostgreSQL链路一致后扩大流量。
-8. 最后单独评审 SimHash Redis 的必要性、保留期和内存压测结果，再决定是否实现 ZSet 候选桶。
+8. SimHash确认成为瓶颈后启用已实现的ZSet候选索引，并在切换generation前完成保留期和内存压测。
 
 ## 13. 验收标准
 

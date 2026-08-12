@@ -159,6 +159,7 @@ dedupe:g2026071601:...
 - generation metadata
 - Exact Hash Bloom
 - external_id Bloom
+- 按天、scope、band value 分桶的 SimHash ZSet 候选索引
 - 按天、scope、band 分桶的 MinHash Bloom
 
 构建过程中会持续输出类似：
@@ -166,6 +167,7 @@ dedupe:g2026071601:...
 ```text
 reserved d20260707
 exact doc_pk=10000
+content simhash band=0 doc_pk=...
 content minhash band=0 doc_pk=...
 ```
 

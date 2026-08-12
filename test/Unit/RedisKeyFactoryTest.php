@@ -16,6 +16,7 @@ final class RedisKeyFactoryTest extends TestCase
 
         self::assertSame('dedupe:test:meta:active_generation', $keys->activeGeneration());
         self::assertSame('dedupe:test:g000001:exact:content_hash', $keys->exactHash('g000001', 'content_hash'));
+        self::assertSame('dedupe:test:g000001:simhash:content:d20260716:b7:v65535', $keys->simhash('g000001', 'content', 'd20260716', 7, 65535));
         self::assertSame('dedupe:test:g000001:minhash:title:d20260716:b31', $keys->minhash('g000001', 'title', 'd20260716', 31));
     }
 

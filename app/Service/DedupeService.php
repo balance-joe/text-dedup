@@ -78,12 +78,16 @@ final class DedupeService
 
         $prefilterStartedAt = microtime(true);
         $prefilterTimings = [];
-        // insert_on_check 的并发正确性仍由 PostgreSQL唯一约束与精确预过滤兜底；
-        // 只读检查才允许使用 Bloom False 跳过 PG。
+        // Redis Bloom 明确返回 False 时可以跳过 PostgreSQL 精确预过滤。
+        // insert_on_check 的并发竞争最终仍由 PostgreSQL 唯一约束兜底；若插入冲突，
+        // 下方会重新执行精确查询并返回已存在的文档。
         $exactRedisMilliseconds = 0.0;
-        $exactBloom = $insertOnCheck
-            ? null
-            : $this->redisIndex->mightContainExact($documentId, $contentContext, $titleContext, $exactRedisMilliseconds);
+        $exactBloom = $this->redisIndex->mightContainExact(
+            $documentId,
+            $contentContext,
+            $titleContext,
+            $exactRedisMilliseconds,
+        );
         $prefilter = $exactBloom === false
             ? null
             : $this->findPrefilterDuplicate(
@@ -96,12 +100,9 @@ final class DedupeService
         if ($exactBloom === false) {
             $prefilterTimings = ['redis_bloom_skipped_pg' => true];
         }
-        $prefilterTimings['redis_attempted'] = !$insertOnCheck;
+        $prefilterTimings['redis_attempted'] = true;
         $prefilterTimings['redis_result_available'] = $exactBloom !== null;
         $prefilterTimings['redis_ms'] = round($exactRedisMilliseconds, 3);
-        if ($insertOnCheck) {
-            $prefilterTimings['redis_skip_reason'] = 'insert_on_check';
-        }
         $performance['prefilter'] = round((microtime(true) - $prefilterStartedAt) * 1000, 2);
         $performance['prefilter_details'] = $prefilterTimings;
         if ($prefilter !== null) {
@@ -450,12 +451,62 @@ final class DedupeService
         }
 
         $normalizedBands = $this->normalizeSimhashBands($bands);
+        $redisBandsTotal = count($normalizedBands);
         $result = [];
         foreach ($normalizedBands as [$bandIndex, $bandValue]) {
             $result[$this->bandKey($bandIndex, $bandValue)] = [];
         }
         if ($normalizedBands === []) {
             $timings = $this->emptyQueryTimings();
+            $timings['redis_bands_total'] = 0;
+            $timings['redis_bands_skipped'] = 0;
+            $timings['redis_bands_queried'] = 0;
+            return $result;
+        }
+
+        $redisMilliseconds = 0.0;
+        $redisCandidates = $this->redisIndex->findSimhashCandidateExternalIds(
+            $bands,
+            $scope,
+            $maxCandidatesPerBand,
+            null,
+            $redisMilliseconds,
+        );
+        if ($redisCandidates !== null) {
+            $externalIds = [];
+            $emptyBands = 0;
+            foreach ($normalizedBands as [$bandIndex, $bandValue]) {
+                $ids = $redisCandidates[$this->bandKey($bandIndex, $bandValue)] ?? [];
+                if ($ids === []) {
+                    ++$emptyBands;
+                }
+                foreach ($ids as $externalId) {
+                    $externalIds[$externalId] = $externalId;
+                }
+            }
+            $candidateTimings = [];
+            $documents = $this->findSimhashDocumentsByExternalIds(array_values($externalIds), $scope, $candidateTimings);
+            foreach ($normalizedBands as [$bandIndex, $bandValue]) {
+                $key = $this->bandKey($bandIndex, $bandValue);
+                foreach ($redisCandidates[$key] ?? [] as $externalId) {
+                    $candidate = $documents[$externalId] ?? null;
+                    if ($candidate === null) {
+                        continue;
+                    }
+                    $result[$key][] = [
+                        'band_index' => $bandIndex,
+                        'band_value' => $bandValue,
+                        ...$candidate,
+                    ];
+                }
+            }
+            $timings = $candidateTimings;
+            $timings['redis_ms'] = round($redisMilliseconds, 3);
+            $timings['redis_candidate_source'] = true;
+            $timings['redis_bloom_skipped_pg'] = $externalIds === [];
+            $timings['redis_bands_total'] = $redisBandsTotal;
+            $timings['redis_bands_skipped'] = $emptyBands;
+            $timings['redis_bands_queried'] = 0;
             return $result;
         }
 
@@ -502,7 +553,50 @@ final class DedupeService
         }
 
         $timings = $this->queryTimings($select, (microtime(true) - $mappingStartedAt) * 1000);
+        $timings['redis_ms'] = round($redisMilliseconds, 3);
+        $timings['redis_candidate_source'] = false;
+        $timings['redis_bloom_skipped_pg'] = false;
+        $timings['redis_bands_total'] = $redisBandsTotal;
+        $timings['redis_bands_queried'] = count($normalizedBands);
+        $timings['redis_bands_skipped'] = 0;
 
+        return $result;
+    }
+
+    /**
+     * @param list<string> $externalIds
+     * @return array<string, array{doc_pk: int, external_id: string, source_from: string, simhash_hi: int, simhash_lo: int}>
+     */
+    private function findSimhashDocumentsByExternalIds(array $externalIds, string $scope, ?array &$timings = null): array
+    {
+        $externalIds = array_values(array_unique(array_filter($externalIds, 'is_string')));
+        if ($externalIds === []) {
+            $timings = $this->emptyQueryTimings();
+            return [];
+        }
+        $table = $this->qualifiedTable((new DocumentFingerprint())->getTable());
+        $hiColumn = $scope === 'title' ? 'title_simhash_hi' : 'simhash_hi';
+        $loColumn = $scope === 'title' ? 'title_simhash_lo' : 'simhash_lo';
+        $placeholders = implode(', ', array_fill(0, count($externalIds), '?'));
+        $select = $this->timedSelect(
+            "SELECT doc_pk, external_id, source_from, {$hiColumn} AS simhash_hi, {$loColumn} AS simhash_lo
+             FROM {$table}
+             WHERE external_id IN ({$placeholders})",
+            $externalIds,
+        );
+        $mappingStartedAt = microtime(true);
+        $result = [];
+        foreach ($select['rows'] as $row) {
+            $externalId = (string) $this->rowValue($row, 'external_id');
+            $result[$externalId] = [
+                'doc_pk' => (int) $this->rowValue($row, 'doc_pk'),
+                'external_id' => $externalId,
+                'source_from' => (string) $this->rowValue($row, 'source_from'),
+                'simhash_hi' => (int) $this->rowValue($row, 'simhash_hi'),
+                'simhash_lo' => (int) $this->rowValue($row, 'simhash_lo'),
+            ];
+        }
+        $timings = $this->queryTimings($select, (microtime(true) - $mappingStartedAt) * 1000);
         return $result;
     }
 
@@ -637,6 +731,12 @@ final class DedupeService
                 'bucket_pool_acquire_ms' => $bucketTimings['pool_acquire_ms'],
                 'bucket_sql_ms' => $bucketTimings['sql_ms'],
                 'bucket_result_mapping_ms' => $bucketTimings['result_mapping_ms'],
+                'redis_ms' => (float) ($bucketTimings['redis_ms'] ?? 0.0),
+                'redis_candidate_source' => (bool) ($bucketTimings['redis_candidate_source'] ?? false),
+                'redis_bloom_skipped_pg' => (bool) ($bucketTimings['redis_bloom_skipped_pg'] ?? false),
+                'redis_bands_total' => (int) ($bucketTimings['redis_bands_total'] ?? 0),
+                'redis_bands_skipped' => (int) ($bucketTimings['redis_bands_skipped'] ?? 0),
+                'redis_bands_queried' => (int) ($bucketTimings['redis_bands_queried'] ?? 0),
                 'candidate_rows' => $candidateRows,
                 'candidate_unique_docs' => count($seenDocumentIds),
                 'hamming_compare_ms' => round((microtime(true) - $comparisonStartedAt) * 1000, 3),
@@ -666,12 +766,16 @@ final class DedupeService
 
         $maxCandidatesPerBand ??= (int) config('dedupe.minhash.max_bucket_size', 1000) + 1;
         $normalizedBands = $this->normalizeMinhashBands($bands);
+        $redisBandsTotal = count($normalizedBands);
         $result = [];
         foreach ($normalizedBands as [$bandIndex, $bandValue]) {
             $result[$this->bandKey($bandIndex, $bandValue)] = [];
         }
         if ($normalizedBands === []) {
             $timings = $this->emptyQueryTimings();
+            $timings['redis_bands_total'] = 0;
+            $timings['redis_bands_skipped'] = 0;
+            $timings['redis_bands_queried'] = 0;
             return $result;
         }
 
@@ -692,6 +796,9 @@ final class DedupeService
             $timings = $this->emptyQueryTimings();
             $timings['redis_ms'] = round($redisMilliseconds, 3);
             $timings['redis_bloom_skipped_pg'] = true;
+            $timings['redis_bands_total'] = $redisBandsTotal;
+            $timings['redis_bands_skipped'] = $redisBandsTotal;
+            $timings['redis_bands_queried'] = 0;
             return $result;
         }
 
@@ -723,6 +830,9 @@ final class DedupeService
         $timings = $this->queryTimings($select, (microtime(true) - $mappingStartedAt) * 1000);
         $timings['redis_ms'] = round($redisMilliseconds, 3);
         $timings['redis_bloom_skipped_pg'] = false;
+        $timings['redis_bands_total'] = $redisBandsTotal;
+        $timings['redis_bands_queried'] = count($normalizedBands);
+        $timings['redis_bands_skipped'] = $redisBandsTotal - count($normalizedBands);
 
         return $result;
     }
@@ -844,6 +954,9 @@ final class DedupeService
                 'bucket_result_mapping_ms' => $bucketTimings['result_mapping_ms'],
                 'redis_ms' => (float) ($bucketTimings['redis_ms'] ?? 0.0),
                 'redis_bloom_skipped_pg' => (bool) ($bucketTimings['redis_bloom_skipped_pg'] ?? false),
+                'redis_bands_total' => (int) ($bucketTimings['redis_bands_total'] ?? 0),
+                'redis_bands_skipped' => (int) ($bucketTimings['redis_bands_skipped'] ?? 0),
+                'redis_bands_queried' => (int) ($bucketTimings['redis_bands_queried'] ?? 0),
                 'candidate_rows' => $candidateRows,
                 'candidate_unique_docs' => count($candidateIds),
                 'candidate_unique_docs_before_limit' => $rankedCandidates['unique_before_limit'],

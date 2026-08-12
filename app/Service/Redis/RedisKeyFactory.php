@@ -54,6 +54,20 @@ final class RedisKeyFactory
         return sprintf('%s:%s:minhash:%s:%s:b%d', $this->prefix(), $this->generation($generation), $scope, $this->bucket($bucket), $bandIndex);
     }
 
+    public function simhash(string $generation, string $scope, string $bucket, int $bandIndex, int $bandValue): string
+    {
+        if (!in_array($scope, ['content', 'title'], true)) {
+            throw new InvalidArgumentException("Unsupported fingerprint scope: {$scope}");
+        }
+        if ($bandIndex < 0 || $bandIndex >= DedupeParameters::simhashBands()) {
+            throw new InvalidArgumentException("Invalid SimHash band index: {$bandIndex}");
+        }
+        if ($bandValue < 0 || $bandValue > 0xffff) {
+            throw new InvalidArgumentException("Invalid SimHash band value: {$bandValue}");
+        }
+        return sprintf('%s:%s:simhash:%s:%s:b%d:v%d', $this->prefix(), $this->generation($generation), $scope, $this->bucket($bucket), $bandIndex, $bandValue);
+    }
+
     public function checkpoint(string $generation, string $name): string
     {
         if (preg_match('/\A[a-z0-9:_-]+\z/i', $name) !== 1) {
